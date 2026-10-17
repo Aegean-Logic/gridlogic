@@ -52,6 +52,11 @@ impl SheetViewMode {
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct Sheet {
     pub name: String,
+    /// Names the sheet across renames and moves while the workbook is open (co-editing ops refer
+    /// to sheets by it). 0 until [`crate::Workbook::ensure_sheet_ids`] assigns one. Not in XLSX:
+    /// every load numbers the sheets afresh, in order.
+    #[serde(default)]
+    pub id: u64,
     pub cells: CellStore,
     /// Static pictures are sparse rich content. Ordinary cells carry no picture pointer.
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty", with = "picture_map")]
@@ -127,6 +132,7 @@ impl Sheet {
     pub fn new(name: impl Into<String>) -> Sheet {
         Sheet {
             name: name.into(),
+            id: 0,
             cells: CellStore::new(),
             cell_pictures: BTreeMap::new(),
             spill: BTreeMap::new(),

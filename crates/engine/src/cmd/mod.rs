@@ -362,6 +362,8 @@ pub(crate) fn commit<R>(d: &mut DocState, f: impl FnOnce(&mut Ctx) -> Result<R>)
     if let Some(t0) = t0 {
         eprintln!("commit: + rows {:?}", t0.elapsed());
     }
+    // A sheet the edit added (or copied) gets its id here, so every sheet always has one.
+    wb.ensure_sheet_ids();
     d.wb = std::sync::Arc::new(wb);
     d.selection = sel;
     Ok(r)

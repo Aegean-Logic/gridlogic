@@ -495,6 +495,8 @@ fn canonical(wb: &Workbook) -> Workbook {
         let sh = Arc::make_mut(sh);
         sh.view_active = CellRef::default();
         sh.view_top_left = CellRef::default();
+        // Sheet ids last while the workbook is open; XLSX doesn't keep them.
+        sh.id = 0;
     }
     wb
 }

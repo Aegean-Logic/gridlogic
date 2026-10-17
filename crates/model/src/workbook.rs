@@ -159,6 +159,33 @@ impl Workbook {
     pub fn sheet_index(&self, name: &str) -> Option<usize> {
         self.sheets.iter().position(|s| s.name.eq_ignore_ascii_case(name))
     }
+    /// The index of the sheet whose [`Sheet::id`] is `id`.
+    pub fn sheet_by_id(&self, id: u64) -> Option<usize> {
+        if id == 0 {
+            return None;
+        }
+        self.sheets.iter().position(|s| s.id == id)
+    }
+    /// Gives every sheet an id no other sheet has: a sheet without one (a new sheet) or repeating
+    /// an earlier sheet's gets the next id above all those in use, in sheet order. The same
+    /// workbook always gets the same ids. An id above all those in use can come back after its
+    /// sheet is deleted; co-editing gives sheets made during a session ids of their own. True
+    /// when it changed anything.
+    pub fn ensure_sheet_ids(&mut self) -> bool {
+        let mut seen = std::collections::BTreeSet::new();
+        let mut next = self.sheets.iter().map(|s| s.id).max().unwrap_or(0);
+        let mut changed = false;
+        for sh in self.sheets.iter_mut() {
+            if sh.id != 0 && seen.insert(sh.id) {
+                continue;
+            }
+            next = next.saturating_add(1);
+            Arc::make_mut(sh).id = next;
+            seen.insert(next);
+            changed = true;
+        }
+        changed
+    }
     pub fn active(&self) -> Option<&Sheet> {
         self.sheet(self.active_sheet)
     }
@@ -305,5 +332,43 @@ mod tests {
         assert!(wb.check_sheet_name("a/b", None).is_err());
         assert!(wb.check_sheet_name(&"x".repeat(32), None).is_err());
         assert!(wb.check_sheet_name("Budget 2026", None).is_ok());
+    }
+
+    fn ids(wb: &Workbook) -> Vec<u64> {
+        wb.sheets.iter().map(|s| s.id).collect()
+    }
+
+    #[test]
+    fn sheet_ids_are_unique_and_deterministic() {
+        let mut wb = Workbook::new();
+        wb.sheets.push(Arc::new(Sheet::new("B")));
+        wb.sheets.push(Arc::new(Sheet::new("C")));
+        assert!(wb.ensure_sheet_ids());
+        assert_eq!(ids(&wb), [1, 2, 3]);
+        assert!(!wb.ensure_sheet_ids(), "nothing to do the second time");
+
+        // A new sheet goes above every id in use (here, above the removed sheet's too).
+        wb.sheets.remove(0);
+        wb.sheets.insert(0, Arc::new(Sheet::new("New")));
+        wb.ensure_sheet_ids();
+        assert_eq!(ids(&wb), [4, 2, 3]);
+
+        // A copy repeats its source's id: the later one gets a new id, the original keeps its own.
+        let copy = wb.sheets[1].as_ref().clone();
+        wb.sheets.insert(1, Arc::new(copy));
+        wb.ensure_sheet_ids();
+        assert_eq!(ids(&wb), [4, 2, 5, 3]);
+        assert_eq!(wb.sheet_by_id(5), Some(2));
+        assert_eq!(wb.sheet_by_id(0), None);
+        assert_eq!(wb.sheet_by_id(99), None);
+
+        // The same workbook always gets the same ids.
+        let mut a = Workbook::new();
+        let mut b = Workbook::new();
+        for wb in [&mut a, &mut b] {
+            wb.sheets.push(Arc::new(Sheet::new("X")));
+            wb.ensure_sheet_ids();
+        }
+        assert_eq!(ids(&a), ids(&b));
     }
 }
