@@ -29,6 +29,7 @@ pub mod pivot_pane;
 pub mod printing;
 pub mod ribbon;
 pub mod selection_glide;
+pub mod share;
 pub mod tabs;
 pub mod text_box;
 pub mod theme;
@@ -207,6 +208,8 @@ pub struct Services {
     /// Web: hand PDF bytes to the browser's print flow directly (no download,
     /// no intermediate file) — opens the system print dialog on that PDF.
     pub print: Option<Box<dyn Fn(&[u8])>>,
+    /// The cloud the workbook can be shared through (Nextcloud): the Share dialog uses it.
+    pub cloud: Option<share::Cloud>,
 }
 
 /// Shared queue of files read asynchronously (browser file picker, drag and drop).
@@ -227,6 +230,8 @@ pub struct SheetApp {
     pub editor: Option<editor::EditState>,
     pub text_box_editor: Option<text_box::EditState>,
     pub dialog: Option<dialogs::Dialog>,
+    /// The Share dialog, when open.
+    pub share: Option<share::ShareDialog>,
     /// The File tab's Backstage view, when open (UI-only; replaces the ribbon, grid and tabs).
     pub backstage: Option<backstage::Backstage>,
     pub message: Option<(String, String)>,
@@ -287,6 +292,7 @@ impl SheetApp {
             editor: None,
             text_box_editor: None,
             dialog: None,
+            share: None,
             backstage: None,
             message: None,
             presence: Vec::new(),
@@ -671,6 +677,13 @@ impl SheetApp {
                     None => self.open_backstage(backstage::Page::Home),
                 }
                 Ok(json!({"page": self.backstage.as_ref().map(|b| b.page.id())}))
+            }
+            "ui.share" => {
+                if self.services.cloud.is_none() {
+                    return Some(Err("Sharing needs a Nextcloud connection.".into()));
+                }
+                self.share = share::ShareDialog::open(self);
+                Ok(json!({"open": self.share.is_some()}))
             }
             "ui.dialog" => {
                 let name = p.get("name").and_then(Json::as_str).unwrap_or("");
@@ -1143,6 +1156,7 @@ impl SheetApp {
             });
         }
         dialogs::show(self, &ctx);
+        share::show(self, &ctx);
         widgets::message_box(self, &ctx);
         widgets::toast(self, &ctx);
         control::issue_screenshots(self, &ctx);

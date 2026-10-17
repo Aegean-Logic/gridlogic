@@ -34,6 +34,13 @@
 //! - `gridcraft:collab:stop` (from the parent) ends sharing; `gridcraft:collab:error` (to the
 //!   parent) `{ error }` says this copy can't follow the log and must rejoin.
 //!
+//! Sharing (the Share dialog's cloud is the page, which has the user's Nextcloud session):
+//!
+//! - `gridcraft:cloud` (to the parent): `{ id, op, params }`, an operation of
+//!   `gridcraft_ui_egui::share::Cloud` (`params` as JSON text).
+//! - `gridcraft:cloud:reply` (from the parent): `{ id, ok, json?, error? }`, its answer (`json`
+//!   as JSON text when `ok`, else `error`).
+//!
 //! Only the parent window on the page's own origin is heard or answered. In host mode the page
 //! starts with an empty workbook instead of a sample, and the parent guards leaving the page.
 
@@ -41,6 +48,7 @@ use std::cell::{Cell, RefCell};
 use std::collections::VecDeque;
 use std::rc::{Rc, Weak};
 
+use gridcraft_ui_egui::share::{Cloud, CloudInbox};
 use gridcraft_ui_egui::{Inbox, Services, SheetApp};
 
 use crate::acks::{Reply, SaveAcks};
@@ -60,6 +68,8 @@ const MAX_AUTHOR_CHARS: usize = 200;
 const MAX_REPLIES: usize = 256;
 /// The most co-editing messages held between two frames; past this the page has to rejoin.
 const MAX_COLLAB_QUEUE: usize = 4096;
+/// The largest answer to a sharing request taken from the page (JSON text).
+const MAX_CLOUD_REPLY_BYTES: usize = 4 << 20;
 
 #[derive(Clone)]
 pub struct Bridge {
@@ -115,7 +125,22 @@ impl Bridge {
     /// from it.
     pub fn connect(&self, services: &mut Services, inbox: Inbox, ctx: egui::Context) {
         *self.ctx.borrow_mut() = Some(ctx.clone());
-        self.listen(inbox, ctx);
+        let answers: CloudInbox = CloudInbox::default();
+        self.listen(inbox, answers.clone(), ctx);
+        // The Share dialog's cloud: the page, which has the user's Nextcloud session.
+        let bridge = self.clone();
+        services.cloud = Some(Cloud {
+            request: Box::new(move |id, op, params| {
+                let params = params.to_string();
+                bridge.send(&[
+                    ("type", "gridcraft:cloud".into()),
+                    ("id", JsValue::from_f64(id as f64)),
+                    ("op", op.into()),
+                    ("params", params.as_str().into()),
+                ]);
+            }),
+            inbox: answers,
+        });
         let bridge = self.clone();
         services.download = Some(Box::new(move |name: &str, bytes: &[u8]| {
             if let Err(e) = bridge.post_save(name, bytes) {
@@ -328,7 +353,7 @@ impl Bridge {
         }
     }
 
-    fn listen(&self, inbox: Inbox, ctx: egui::Context) {
+    fn listen(&self, inbox: Inbox, answers: CloudInbox, ctx: egui::Context) {
         let parent = self.parent.clone();
         let origin = self.origin.clone();
         let acks = self.acks.is_some();
@@ -341,6 +366,22 @@ impl Bridge {
             }
             let data = event.data();
             let Some(kind) = string(&data, "type") else { return };
+            if kind == "gridcraft:cloud:reply" {
+                let Some(id) = number(&data, "id").filter(|v| v.is_finite() && *v >= 0.0 && v.fract() == 0.0) else { return };
+                let ok = js_sys::Reflect::get(&data, &JsValue::from_str("ok")).ok().and_then(|v| v.as_bool()).unwrap_or(false);
+                let answer = if ok {
+                    match string(&data, "json") {
+                        Some(text) if text.len() <= MAX_CLOUD_REPLY_BYTES => serde_json::from_str(&text).map_err(|e| e.to_string()),
+                        Some(_) => Err("the answer was too large".to_string()),
+                        None => Ok(serde_json::Value::Null),
+                    }
+                } else {
+                    Err(string(&data, "error").unwrap_or_else(|| "Nextcloud didn't answer".into()).chars().take(500).collect())
+                };
+                answers.lock().unwrap_or_else(|e| e.into_inner()).push((id as u64, answer));
+                ctx.request_repaint();
+                return;
+            }
             if kind == "gridcraft:open" {
                 let name = string(&data, "name").filter(|n| !n.trim().is_empty()).unwrap_or_else(|| "Book.xlsx".to_string());
                 let Some(bytes) = bytes(&data) else { return };

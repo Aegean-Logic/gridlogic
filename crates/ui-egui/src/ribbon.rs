@@ -129,8 +129,12 @@ pub fn title_bar(app: &mut SheetApp, ui: &mut Ui) {
                 if __k.clicked() {
                     app.open_dialog("commandSearch", json!({}));
                 }
-                let share = small_button(ui, Icon::Share, "Share", "Share: export or save a copy", true);
-                egui::Popup::menu(&share).show(|ui| {
+                // With a cloud (Nextcloud), Share shares, as in Excel; the exports stay on its
+                // right-click menu. Without one, it's the export menu.
+                let cloud = app.services.cloud.is_some();
+                let hint = if cloud { "Share with people or by link (right-click: export a copy)" } else { "Share: export or save a copy" };
+                let share = small_button(ui, Icon::Share, "Share", hint, true);
+                let exports = |app: &mut SheetApp, ui: &mut egui::Ui| {
                     if ui.button("Export as PDF…").clicked() {
                         app.run_or_alert("file.exportPdf", json!({}));
                     }
@@ -141,7 +145,15 @@ pub fn title_bar(app: &mut SheetApp, ui: &mut Ui) {
                             app.open_dialog("saveCopy", json!({"format": fmt}));
                         }
                     }
-                });
+                };
+                if cloud {
+                    if share.clicked() {
+                        act(app, "ui.share", json!({}));
+                    }
+                    share.context_menu(|ui| exports(app, ui));
+                } else {
+                    egui::Popup::menu(&share).show(|ui| exports(app, ui));
+                }
                 let __k = icon_button(ui, Icon::Comment, t.text_dim, "Comments", vec2(28.0, ch));
                 control_keytip(app, ui, &__k, "comments");
                 if __k.clicked() {

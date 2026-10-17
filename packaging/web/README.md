@@ -127,6 +127,20 @@ While sharing, Undo and Redo work on this person's own edits only, and never tak
 change of someone else's. GridLogic handles co-editing messages as they arrive, even in a hidden
 tab, which draws no frames.
 
+### Sharing
+
+The Share button opens GridLogic's Share dialog: add people, groups or email addresses with Can
+edit or Can view, write a message, Send, Copy link (with link settings) and manage who has access.
+GridLogic draws the dialog. The page does the talking to the file's server (for Nextcloud, its
+sharing API; `gridcraft-nextcloud/src/share.js`). The operations are those of
+`gridcraft_ui_egui::share::Cloud`: `share.info`, `share.search`, `share.list`, `share.add`,
+`share.update`, `share.remove` and `share.link`.
+
+| Message | Direction | Fields |
+|---|---|---|
+| `gridcraft:cloud` | to the page | `id`, `op` (an operation above), `params` (JSON text). |
+| `gridcraft:cloud:reply` | from the page | `id`, `ok`, then `json` (the answer as JSON text) when `ok`, otherwise `error` (a sentence for the user). |
+
 ```js
 const frame = document.querySelector("iframe"); // src="/gridcraft/?host=parent&ack=1"
 addEventListener("message", async (event) => {

@@ -27,6 +27,23 @@ winresource = "0.1"
 craft-print = { git = "https://github.com/storytold/craft-libs", rev = "d27646a5f7c8b4fc85d9dd3213b8c88b58e0088d" }
 rfd = { workspace = true }
 arboard = { workspace = true }
+# Nextcloud (`nextcloud.rs`): HTTP with rustls, on worker threads.
+# The system's own certificate store, so company and self-signed CAs the system trusts work.
+ureq = { version = "3", features = ["platform-verifier"] }
+serde = { workspace = true }
+
+# The Nextcloud app password, in the system's own keychain.
+[target.'cfg(target_os = "windows")'.dependencies.keyring]
+version = "3"
+features = ["windows-native"]
+
+[target.'cfg(target_os = "macos")'.dependencies.keyring]
+version = "3"
+features = ["apple-native"]
+
+[target.'cfg(any(target_os = "linux", target_os = "freebsd"))'.dependencies.keyring]
+version = "3"
+features = ["async-secret-service", "async-io", "crypto-rust"]
 
 [target.'cfg(any(target_os = "linux", target_os = "freebsd"))'.dependencies]
 arboard = { workspace = true, features = ["wayland-data-control"] }

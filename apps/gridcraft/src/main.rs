@@ -16,6 +16,7 @@ mod graphics;
 mod logging;
 #[cfg(target_os = "macos")]
 mod native_menu;
+mod nextcloud;
 mod print;
 
 use std::cell::RefCell;
@@ -25,21 +26,27 @@ use gridcraft_engine::Session;
 use gridcraft_ui_egui::{Services, SheetApp};
 use serde_json::json;
 
-struct App(SheetApp, #[cfg(target_os = "macos")] Option<native_menu::NativeMenu>, #[cfg(target_os = "macos")] fmv_macos_events::Inbox);
+struct App(
+    SheetApp,
+    nextcloud::Nextcloud,
+    #[cfg(target_os = "macos")] Option<native_menu::NativeMenu>,
+    #[cfg(target_os = "macos")] fmv_macos_events::Inbox,
+);
 
 impl eframe::App for App {
     fn logic(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
         #[cfg(target_os = "macos")]
         {
-            if self.1.is_none() && std::env::var_os("GRIDCRAFT_NO_NATIVE_MENU").is_none() {
-                self.1 = Some(native_menu::NativeMenu::install(ctx));
+            if self.2.is_none() && std::env::var_os("GRIDCRAFT_NO_NATIVE_MENU").is_none() {
+                self.2 = Some(native_menu::NativeMenu::install(ctx));
             }
-            if let Some(m) = &self.1 {
+            if let Some(m) = &self.2 {
                 m.poll(&mut self.0, ctx);
             }
-            apple_events::poll(&self.2, &mut self.0, ctx);
+            apple_events::poll(&self.3, &mut self.0, ctx);
         }
         self.0.logic(ctx);
+        self.1.poll(&mut self.0, ctx);
         self.0.poll_printing(ctx);
         if ctx.input(|input| input.viewport().close_requested()) && self.0.printing.busy() {
             ctx.send_viewport_cmd(egui::ViewportCommand::CancelClose);
@@ -147,7 +154,7 @@ fn read_clipboard<T>(
     read(clipboard.as_mut()?).ok()
 }
 
-fn services() -> Services {
+fn services(cloud: gridcraft_ui_egui::share::Cloud) -> Services {
     // Keep the owner alive: X11/Wayland serve clipboard data from this handle.
     let clipboard: Rc<RefCell<Option<arboard::Clipboard>>> = Rc::default();
     let (html_clipboard, text_clipboard) = (clipboard.clone(), clipboard.clone());
@@ -195,6 +202,7 @@ fn services() -> Services {
         open_url: Some(Box::new(|url: &str| open_with_system(url))),
         printers: Some(print::discover()),
         print_native: Some(print::submit()),
+        cloud: Some(cloud),
         ..Default::default()
     }
 }
@@ -297,7 +305,9 @@ fn main() -> eframe::Result<()> {
     if session.documents().is_empty() {
         session.new_workbook();
     }
-    let mut app = SheetApp::new(session, services());
+    // Nextcloud, as OneDrive is to Excel: the Share dialog's cloud.
+    let nextcloud = nextcloud::Nextcloud::new(config_dir().filter(|_| prefs_enabled()).map(|d| d.join("nextcloud.json")), open_with_system);
+    let mut app = SheetApp::new(session, services(nextcloud.cloud()));
     app.watch_desktop_theme();
     app.after_engine(); // Show warnings from the sample.
     let control_port = control_port;
@@ -341,13 +351,13 @@ fn main() -> eframe::Result<()> {
     let apple_events = &apple_events;
     // The app waits here until a start gets as far as creating it; a start that fails before
     // (no graphics adapter, device or surface) leaves it here for the next attempt.
-    let pending = std::cell::Cell::new(Some(app));
+    let pending = std::cell::Cell::new(Some((app, nextcloud)));
     let run = |options: eframe::NativeOptions| {
         eframe::run_native(
             "GridLogic",
             options,
             Box::new(|cc| {
-                let Some(mut app) = pending.take() else {
+                let Some((mut app, nextcloud)) = pending.take() else {
                     return Err("the app was already created".into());
                 };
                 SheetApp::setup_context_for_language(&cc.egui_ctx, app.ui.dark, app.ui.language);
@@ -359,6 +369,7 @@ fn main() -> eframe::Result<()> {
                 }
                 Ok(Box::new(App(
                     app,
+                    nextcloud,
                     #[cfg(target_os = "macos")]
                     None,
                     #[cfg(target_os = "macos")]
