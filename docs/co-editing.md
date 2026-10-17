@@ -63,8 +63,8 @@ Phase 2 pieces:
   - polls for others' entries
   - the member with the lowest client id writes the checkpoints, and the server keeps the
     checkpoint's sheet ids for joiners
-- **Shared links.** Anyone with a link to the file (`/s/{token}`) joins the same session as a
-  guest. They use the link's own WebDAV address and `/apps/gridcraft/s/{token}/collab/*`.
+- **Shared links.** Anyone with a link to the file (`/s/{token}`), or to a folder holding it,
+  joins the same session as a guest. They use the link's own WebDAV address and `/apps/gridcraft/s/{token}/collab/*`.
   Membership is proved with a random key handed out on join, and edits need an edit link.
 - **The desktop app.** A workbook opened from Nextcloud in GridLogic on a computer
   (`apps/gridcraft/src/nextcloud/coedit.rs`) joins the same session. It signs in with its app
