@@ -167,7 +167,9 @@ impl ShareDialog {
             shares: Vec::new(),
             manage: false,
             link_settings: false,
-            link_edit: false,
+            // A new link lets people edit, as OneDrive's "anyone with the link" does; the list
+            // replaces this with what an existing link really allows.
+            link_edit: true,
             link_password: String::new(),
             link_expiry: String::new(),
             status: None,
@@ -259,7 +261,8 @@ impl ShareDialog {
                 Asked::Link { copy } => {
                     if copy && let Some(url) = answer.get("url").and_then(Json::as_str) {
                         ctx.copy_text(url.to_string());
-                        self.status = Some(("Link copied.".into(), false));
+                        let can = if answer.get("edit").and_then(Json::as_bool).unwrap_or(self.link_edit) { "edit" } else { "view" };
+                        self.status = Some((format!("Link copied. Anyone with it can {can}."), false));
                     } else {
                         self.status = Some(("Link settings saved.".into(), false));
                     }
@@ -423,7 +426,7 @@ fn body(app: &mut SheetApp, ui: &mut egui::Ui, d: &mut ShareDialog, t: &Tokens) 
                 }
             }
             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                permission_combo(ui, "share-permission", &mut d.edit);
+                permission_combo(ui, "share-permission", "Permission for people", &mut d.edit);
             });
         });
     });
@@ -460,6 +463,23 @@ fn body(app: &mut SheetApp, ui: &mut egui::Ui, d: &mut ShareDialog, t: &Tokens) 
         "Add a message",
     );
     ui.add_space(8.0);
+
+    // The link, and what it lets people do: in plain sight, as in Excel, so Copy link never
+    // copies a permission nobody saw. Changing it changes an existing link at once.
+    ui.horizontal(|ui| {
+        ui.label("🔗 Anyone with the link");
+        let before = d.link_edit;
+        permission_combo(ui, "link-permission", "Link permission", &mut d.link_edit);
+        if d.link_edit != before
+            && let Some(link) = d.shares.iter().find(|s| s.kind == "link")
+        {
+            let id = link.id.clone();
+            let can = if d.link_edit { "edit" } else { "view" };
+            d.status = Some((format!("Link changed: anyone with it can {can}."), false));
+            d.ask(app, "share.update", json!({"id": id, "edit": d.link_edit}), Asked::Update);
+        }
+    });
+    ui.add_space(6.0);
 
     // Footer: who has access, the link, and Send.
     ui.horizontal(|ui| {
@@ -501,11 +521,15 @@ fn labelled(r: egui::Response, name: &str) -> egui::Response {
     r
 }
 
-fn permission_combo(ui: &mut egui::Ui, id: &str, edit: &mut bool) {
-    egui::ComboBox::from_id_salt(id).selected_text(if *edit { "Can edit" } else { "Can view" }).width(96.0).show_ui(ui, |ui| {
+/// "Can edit" or "Can view"; `name` says what for (for screen readers, with the choice).
+fn permission_combo(ui: &mut egui::Ui, id: &str, name: &str, edit: &mut bool) {
+    let shown = if *edit { "Can edit" } else { "Can view" };
+    let r = egui::ComboBox::from_id_salt(id).selected_text(shown).width(96.0).show_ui(ui, |ui| {
         ui.selectable_value(edit, true, "Can edit");
         ui.selectable_value(edit, false, "Can view");
     });
+    let label = format!("{name}: {shown}");
+    r.response.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::ComboBox, true, &label));
 }
 
 fn link_params(d: &ShareDialog) -> Json {
@@ -535,10 +559,6 @@ fn people_summary(ui: &mut egui::Ui, d: &mut ShareDialog, t: &Tokens) {
 fn link_settings(app: &mut SheetApp, ui: &mut egui::Ui, d: &mut ShareDialog, t: &Tokens) {
     egui::Frame::new().stroke(egui::Stroke::new(1.0, t.separator)).corner_radius(4.0).inner_margin(8.0).show(ui, |ui| {
         ui.label(RichText::new("Link settings").strong());
-        ui.horizontal(|ui| {
-            ui.label("Anyone with the link");
-            permission_combo(ui, "link-permission", &mut d.link_edit);
-        });
         ui.horizontal(|ui| {
             ui.label("Password");
             labelled(ui.add(egui::TextEdit::singleline(&mut d.link_password).password(true).hint_text("none").desired_width(160.0)), "Link password");
@@ -593,7 +613,8 @@ fn people_with_access(app: &mut SheetApp, ui: &mut egui::Ui, d: &mut ShareDialog
                             remove = Some(s.id.clone());
                         }
                         let mut edit = s.edit;
-                        permission_combo(ui, &format!("access-{}", s.id), &mut edit);
+                        let name = if s.kind == "link" { "Link permission".to_string() } else { format!("Permission for {}", s.label) };
+                        permission_combo(ui, &format!("access-{}", s.id), &name, &mut edit);
                         if edit != s.edit {
                             change = Some((s.id.clone(), edit));
                         }

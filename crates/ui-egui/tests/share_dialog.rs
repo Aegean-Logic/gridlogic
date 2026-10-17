@@ -15,11 +15,22 @@ use serde_json::{Value as Json, json};
 struct Fake {
     requests: Arc<Mutex<Vec<(String, Json)>>>,
     info: Arc<Mutex<Json>>,
+    /// The file's shares, as `share.list` answers.
+    shares: Arc<Mutex<Json>>,
 }
 
 impl Fake {
     fn new(info: Json) -> Fake {
-        Fake { requests: Arc::default(), info: Arc::new(Mutex::new(info)) }
+        let shares = json!([
+            {"id": 7, "type": "user", "shareWith": "ben", "label": "Ben", "edit": true, "password": false},
+            {"id": 9, "type": "link", "shareWith": "", "label": "", "edit": false, "url": "https://cloud.example/s/abc", "password": false}
+        ]);
+        Fake { requests: Arc::default(), info: Arc::new(Mutex::new(info)), shares: Arc::new(Mutex::new(shares)) }
+    }
+    fn without_shares(info: Json) -> Fake {
+        let f = Fake::new(info);
+        *f.shares.lock().unwrap() = json!([]);
+        f
     }
     fn cloud(&self) -> Cloud {
         let inbox: CloudInbox = Arc::default();
@@ -42,11 +53,8 @@ impl Fake {
                         {"label": "Ana Lopez", "detail": "ana@example.com", "type": "user", "shareWith": "ana"},
                         {"label": "Finance", "type": "group", "shareWith": "finance"}
                     ]),
-                    "share.list" => json!([
-                        {"id": 7, "type": "user", "shareWith": "ben", "label": "Ben", "edit": true, "password": false},
-                        {"id": 9, "type": "link", "shareWith": "", "label": "", "edit": false, "url": "https://cloud.example/s/abc", "password": false}
-                    ]),
-                    "share.link" => json!({"id": 9, "type": "link", "url": "https://cloud.example/s/abc"}),
+                    "share.list" => me.shares.lock().unwrap().clone(),
+                    "share.link" => json!({"id": 9, "type": "link", "url": "https://cloud.example/s/abc", "edit": params["edit"]}),
                     _ => json!({}),
                 };
                 answers.lock().unwrap().push((id, Ok(answer)));
@@ -117,14 +125,45 @@ fn share_with_people_and_send() {
 
 #[test]
 fn copy_link() {
+    // A link that exists already keeps what it allows (here: view).
     let fake = Fake::new(shared_file());
+    let mut h = harness(&fake);
+    open(&mut h);
+    assert!(h.query_by_label_contains("Link permission: Can view").is_some(), "the link's permission is in plain sight");
+    h.get_by_label("🔗 Copy link").click();
+    h.run_steps(6);
+    let link = fake.ops().into_iter().find(|(op, _)| op == "share.link").map(|(_, p)| p);
+    assert_eq!(link, Some(json!({"edit": false, "expiration": null})), "copying doesn't change an existing view link");
+    assert!(h.query_by_label_contains("Link copied. Anyone with it can view.").is_some());
+}
+
+#[test]
+fn a_new_link_lets_people_edit() {
+    let fake = Fake::without_shares(shared_file());
     let mut h = harness(&fake);
     open(&mut h);
     h.get_by_label("🔗 Copy link").click();
     h.run_steps(6);
     let link = fake.ops().into_iter().find(|(op, _)| op == "share.link").map(|(_, p)| p);
-    assert_eq!(link, Some(json!({"edit": false, "expiration": null})), "a view link by default");
-    assert!(h.query_by_label_contains("Link copied.").is_some());
+    assert_eq!(link, Some(json!({"edit": true, "expiration": null})), "as OneDrive's anyone-with-the-link");
+    assert!(h.query_by_label_contains("Link copied. Anyone with it can edit.").is_some());
+}
+
+#[test]
+fn changing_the_link_permission_changes_the_link() {
+    let fake = Fake::new(shared_file());
+    let mut h = harness(&fake);
+    open(&mut h);
+    h.get_by_label("Link permission: Can view").click();
+    h.run_steps(2);
+    // The open list's "Can edit" choice.
+    if let Some(choice) = h.get_all_by_label("Can edit").last() {
+        choice.click();
+    }
+    h.run_steps(6);
+    let update = fake.ops().into_iter().find(|(op, _)| op == "share.update").map(|(_, p)| p);
+    assert_eq!(update, Some(json!({"id": 9, "edit": true})));
+    assert!(h.query_by_label_contains("Link changed: anyone with it can edit.").is_some());
 }
 
 #[test]
