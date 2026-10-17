@@ -6,10 +6,14 @@
 //! command replicates without per-command code). No I/O here: the host moves ops between people.
 
 mod patch;
+mod replica;
 mod structure;
+mod transform;
 
 pub use patch::{Applied, CellChange, Content, Field, Line, LineChange, Patch, SheetPatch, apply_patch, make_patch};
+pub use replica::{Incoming, Outgoing, Replica};
 pub use structure::{Dir, StructEdit, replay};
+pub use transform::rebase;
 
 use std::sync::Arc;
 

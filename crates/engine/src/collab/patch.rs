@@ -19,9 +19,13 @@ use crate::{EngineError, Result};
 /// What an edit changed. Empty when it changed nothing another person would see.
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
 pub struct Patch {
-    /// The sheet ids in order after the edit, when it added, removed or reordered sheets.
+    /// The sheet ids in order after the edit, when it added, removed or reordered sheets. Sheets
+    /// it doesn't name (added by someone else meanwhile) keep their order, after these.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub order: Option<Vec<u64>>,
+    /// Sheets the edit deleted, by id.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub removed: Vec<u64>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub sheets: Vec<SheetPatch>,
     /// Workbook settings (defined names, properties, calculation options…), replaced whole.
@@ -31,7 +35,7 @@ pub struct Patch {
 
 impl Patch {
     pub fn is_empty(&self) -> bool {
-        self.order.is_none() && self.sheets.is_empty() && self.fields.is_empty()
+        self.order.is_none() && self.removed.is_empty() && self.sheets.is_empty() && self.fields.is_empty()
     }
 }
 
@@ -171,7 +175,7 @@ macro_rules! sheet_fields {
             )*
             Ok(out)
         }
-        fn set_sheet_field(sh: &mut Sheet, field: &Field) -> Result<()> {
+        pub(super) fn set_sheet_field(sh: &mut Sheet, field: &Field) -> Result<()> {
             let probe: Sheet = probe_with(&Sheet::new(""), field)?;
             match field.name.as_str() {
                 $(stringify!($f) => sh.$f = probe.$f,)*
@@ -233,7 +237,7 @@ macro_rules! workbook_fields {
             )*
             Ok(out)
         }
-        fn set_workbook_field(wb: &mut Workbook, field: &Field) -> Result<()> {
+        pub(super) fn set_workbook_field(wb: &mut Workbook, field: &Field) -> Result<()> {
             let probe: Workbook = probe_with(&Workbook::new(), field)?;
             match field.name.as_str() {
                 $(stringify!($f) => wb.$f = probe.$f,)*
@@ -265,7 +269,7 @@ const WORKBOOK_LOCAL: &[&str] = &["sheets", "styles", "active_sheet"];
 
 /// One setting of `probe` (a blank sheet or workbook with that setting copied in), as it
 /// serialises, so settings with their own serde format (`cellmap`, base64) keep it.
-fn field_of<T: Serialize>(probe: &T, name: &str) -> Result<Field> {
+pub(super) fn field_of<T: Serialize>(probe: &T, name: &str) -> Result<Field> {
     let json = serde_json::to_value(probe).map_err(|e| EngineError::Other(format!("co-editing: {name}: {e}")))?;
     let value = json.get(name).filter(|v| !v.is_null()).cloned();
     Ok(Field { name: name.to_string(), value })
@@ -308,7 +312,8 @@ pub fn make_patch(before: &Workbook, after: &Workbook) -> Result<Patch> {
             sheets.push(p);
         }
     }
-    Ok(Patch { order, sheets, fields: diff_workbook_fields(before, after)? })
+    let removed = before.sheets.iter().map(|s| s.id).filter(|id| after.sheet_by_id(*id).is_none()).collect();
+    Ok(Patch { order, removed, sheets, fields: diff_workbook_fields(before, after)? })
 }
 
 fn diff_sheet(sb_styles: &StyleTable, sb: &Sheet, sa_styles: &StyleTable, sa: &Sheet, new: bool) -> Result<SheetPatch> {
@@ -359,6 +364,15 @@ pub fn apply_patch(wb: &mut Workbook, patch: &Patch) -> Result<Applied> {
     let mut applied = Applied::default();
     let active_id = wb.active().map(|s| s.id);
 
+    // Deleted sheets go first, but a workbook always keeps one sheet.
+    for id in &patch.removed {
+        if wb.sheets.len() > 1
+            && let Some(i) = wb.sheet_by_id(*id)
+        {
+            wb.sheets.remove(i);
+            applied.structural = true;
+        }
+    }
     // Sheets the patch creates join at the end until `order` places them.
     for sp in patch.sheets.iter().filter(|sp| sp.new) {
         if sp.id != 0 && wb.sheet_by_id(sp.id).is_none() {
@@ -369,7 +383,7 @@ pub fn apply_patch(wb: &mut Workbook, patch: &Patch) -> Result<Applied> {
         }
     }
     if let Some(order) = &patch.order {
-        let mut sheets = Vec::with_capacity(order.len());
+        let mut sheets = Vec::with_capacity(wb.sheets.len());
         for id in order {
             if let Some(i) = wb.sheet_by_id(*id)
                 && let Some(sh) = wb.sheets.get(i)
@@ -378,10 +392,10 @@ pub fn apply_patch(wb: &mut Workbook, patch: &Patch) -> Result<Applied> {
                 sheets.push(sh.clone());
             }
         }
-        // Never leave a workbook without sheets: an order naming none of them is ignored.
-        if !sheets.is_empty() {
-            wb.sheets = sheets;
-        }
+        // Sheets the order doesn't name (someone else's, added meanwhile) follow, as they were.
+        let rest: Vec<Arc<Sheet>> = wb.sheets.iter().filter(|s| !sheets.iter().any(|t| t.id == s.id)).cloned().collect();
+        sheets.extend(rest);
+        wb.sheets = sheets;
         applied.structural = true;
     }
     // The active sheet is each person's own: keep showing the same one if it's still there.
@@ -489,6 +503,7 @@ mod tests {
     fn a_patch_round_trips_through_json() {
         let p = Patch {
             order: Some(vec![2, 1]),
+            removed: vec![3],
             sheets: vec![SheetPatch {
                 id: 1,
                 new: false,

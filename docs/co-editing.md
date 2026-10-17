@@ -1,6 +1,38 @@
 # Real-time co-editing: design
 
-Status: draft, 2026-10-17. Fork-specific (Aegean Office). Not upstream behaviour.
+Status: phase 1 (engine foundations) done, 2026-10-17. Fork-specific (Aegean Office). Not
+upstream behaviour.
+
+## Where it stands
+
+Phase 1 is in `crates/engine/src/collab/` and needs no I/O; phases 2–3 (transport, presence,
+collaborative undo) are next.
+
+| Piece | Code | Proof |
+|---|---|---|
+| Stable sheet ids | `Sheet::id`, `Workbook::ensure_sheet_ids` | `tests/sheet_ids.rs` |
+| Content patches | `collab::patch` (`make_patch`, `apply_patch`) | Every `Sheet`/`Workbook` field is replicated or listed as local (unit test); 47 commands replicate exactly (`tests/collab_patch.rs`) |
+| Structural edits | `Ctx::record`, `cmd::sheet::apply_shift` (shared with the commands), `collab::replay` | Structural ops carry the shift, not the shifted cells; hostile ops are refused |
+| Transform | `collab::rebase` | Every pair of row/column inserts and deletes commutes (exhaustive unit test) |
+| Replica | `collab::Replica` (`run`, `outgoing`, `receive`) | `tests/collab_fuzz.rs`: 2,000 random 3-person sessions × 200 steps (149k edits, 42k structural ops) all converge; `tests/collab_scenarios.rs`: merges match intent |
+
+Decisions made while building it:
+
+- **Server-ordered, client-transformed, one op in flight per client.** An op's base is always
+  past its author's previous op, so log op `n` is rebased over `base+1 .. n-1` (none its
+  author's) by every copy alike: convergence needs only that `rebase` is deterministic.
+- **The author confirms its own op the way everyone else does**, recomputing it from the sent
+  form, not trusting its locally rebased copy.
+- **Sheet deletions are explicit** (`Patch::removed`); an `order` lists the sheets the editor
+  knew, and sheets added meanwhile keep their place after them.
+- **Sheets made in a shared session get ids namespaced by client** (`client << 32 | n`), so two
+  people adding a sheet at once can't collide.
+- **Undo is refused in a shared session** until phase 3's collaborative undo.
+- **A copy missing log history must rejoin** rather than guess: placing an op without the
+  entries its author hadn't seen would diverge. The server must give a joining copy the log
+  from its checkpoint on.
+- **Known cost:** each received op rebuilds the shown workbook and recalculates it fully. Fine
+  for typical sheets; incremental recalculation is a phase 4 item.
 
 Goal: several people edit one workbook at once, as in Excel Online. Each person sees the
 others' edits within about a second and their selections live, and everyone ends with the same
