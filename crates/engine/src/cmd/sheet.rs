@@ -238,6 +238,59 @@ fn rewrite(wb: &mut gridcraft_model::Workbook, target: &str, e: &Edit) {
     }
 }
 
+/// Shifts sheet `si` of `wb` for an insert or delete of rows, columns or cells: its cells,
+/// everything positioned on it, and every reference to it. The insert and delete commands and
+/// co-editing's replay of them ([`crate::collab::replay`]) all go through here, so a replayed
+/// edit lands exactly as the original did. Moves (`Edit::Move*`) aren't shifts and are refused.
+pub(crate) fn apply_shift(wb: &mut gridcraft_model::Workbook, si: usize, e: &Edit) -> Result<()> {
+    let no_sheet = || EngineError::Other("no such sheet".into());
+    let name = wb.sheet(si).map(|s| s.name.clone()).ok_or_else(no_sheet)?;
+    {
+        let sh = wb.sheet_mut(si).ok_or_else(no_sheet)?;
+        match *e {
+            Edit::Insert { axis, at, count } => {
+                match axis {
+                    Axis::Rows => sh.cells.shift_rows(at, count as i64),
+                    Axis::Cols => sh.cells.shift_cols(at, count as i64),
+                }
+                shift_sheet_features(sh, axis, at, count, true);
+            }
+            Edit::Delete { axis, at, count } => {
+                let last = at.saturating_add(count.saturating_sub(1));
+                let block = match axis {
+                    Axis::Rows => RangeRef::rows(at, last.min(MAX_ROWS - 1)),
+                    Axis::Cols => RangeRef::cols(at, last.min(MAX_COLS - 1)),
+                };
+                sh.take_cells(block);
+                match axis {
+                    Axis::Rows => sh.cells.shift_rows(at.saturating_add(count), -(count as i64)),
+                    Axis::Cols => sh.cells.shift_cols(at.saturating_add(count), -(count as i64)),
+                }
+                shift_sheet_features(sh, axis, at, count, false);
+            }
+            Edit::InsertCells { axis, range: r } => {
+                match axis {
+                    Axis::Cols => sh.cells.shift_cols_in_rows(r.start.row, r.end.row, r.start.col, r.width() as i64),
+                    Axis::Rows => sh.cells.shift_rows_in_cols(r.start.col, r.end.col, r.start.row, r.height() as i64),
+                }
+                shift_cell_features(sh, e);
+            }
+            Edit::DeleteCells { axis, range: r } => {
+                sh.take_cells(r);
+                match axis {
+                    Axis::Cols => sh.cells.shift_cols_in_rows(r.start.row, r.end.row, r.end.col.saturating_add(1), -(r.width() as i64)),
+                    Axis::Rows => sh.cells.shift_rows_in_cols(r.start.col, r.end.col, r.end.row.saturating_add(1), -(r.height() as i64)),
+                }
+                shift_cell_features(sh, e);
+            }
+            Edit::Move { .. } | Edit::MoveToSheet { .. } => return Err(EngineError::Other("a move isn't a shift".into())),
+        }
+    }
+    // References into deleted cells become #REF!; the rest move.
+    rewrite(wb, &name, e);
+    Ok(())
+}
+
 /// Inserting or deleting cells moves the copied block away from the stored source range, so, like
 /// Excel, it cancels copy/cut mode for this workbook (a later paste would take the wrong cells).
 fn cancel_copy_mode(s: &mut Session) {
@@ -264,15 +317,12 @@ fn insert_lines(s: &mut Session, p: &Json, axis: Axis) -> Result<Json> {
         }
     }
     let out = edit(s, |cx| {
-        let name = cx.wb.sheet(sheet).map(|s| s.name.clone()).unwrap_or_default();
         cx.protection_checked = true;
+        let e = Edit::Insert { axis, at, count };
+        apply_shift(&mut cx.wb, sheet, &e)?;
+        cx.record(sheet, &e);
         {
             let sh = cx.sheet_mut(sheet)?;
-            match axis {
-                Axis::Rows => sh.cells.shift_rows(at, count as i64),
-                Axis::Cols => sh.cells.shift_cols(at, count as i64),
-            }
-            shift_sheet_features(sh, axis, at, count, true);
             // New lines take the format of the line before (Excel's "Format Same As Above").
             if at > 0 {
                 let prev = if axis == Axis::Rows { sh.rows.get(&(at - 1)).copied() } else { sh.cols.get(&(at - 1)).copied() };
@@ -284,7 +334,6 @@ fn insert_lines(s: &mut Session, p: &Json, axis: Axis) -> Result<Json> {
                 }
             }
         }
-        rewrite(&mut cx.wb, &name, &Edit::Insert { axis, at, count });
         cx.structural = true;
         Ok(Json::Null)
     })?;
@@ -332,24 +381,12 @@ fn delete_lines(s: &mut Session, p: &Json, axis: Axis) -> Result<Json> {
     }
     let sheet = target_sheet(s, p)?;
     let out = edit(s, |cx| {
-        let name = cx.wb.sheet(sheet).map(|s| s.name.clone()).unwrap_or_default();
         cx.protection_checked = true;
         // Last area first, so the earlier ones keep their positions.
         for (at, count) in areas {
-            {
-                let sh = cx.sheet_mut(sheet)?;
-                let block = match axis {
-                    Axis::Rows => RangeRef::rows(at, (at + count - 1).min(MAX_ROWS - 1)),
-                    Axis::Cols => RangeRef::cols(at, (at + count - 1).min(MAX_COLS - 1)),
-                };
-                sh.take_cells(block);
-                match axis {
-                    Axis::Rows => sh.cells.shift_rows(at + count, -(count as i64)),
-                    Axis::Cols => sh.cells.shift_cols(at + count, -(count as i64)),
-                }
-                shift_sheet_features(sh, axis, at, count, false);
-            }
-            rewrite(&mut cx.wb, &name, &Edit::Delete { axis, at, count });
+            let e = Edit::Delete { axis, at, count };
+            apply_shift(&mut cx.wb, sheet, &e)?;
+            cx.record(sheet, &e);
         }
         cx.structural = true;
         Ok(Json::Null)
@@ -394,12 +431,9 @@ fn move_columns(s: &mut Session, p: &Json) -> Result<Json> {
         let name = cx.wb.sheet(sheet).map(|sh| sh.name.clone()).unwrap_or_default();
         cx.protection_checked = true;
 
-        {
-            let sh = cx.sheet_mut(sheet)?;
-            sh.cells.shift_cols(before, count as i64);
-            shift_sheet_features(sh, Axis::Cols, before, count, true);
-        }
-        rewrite(&mut cx.wb, &name, &Edit::Insert { axis: Axis::Cols, at: before, count });
+        let insert = Edit::Insert { axis: Axis::Cols, at: before, count };
+        apply_shift(&mut cx.wb, sheet, &insert)?;
+        cx.record(sheet, &insert);
 
         let mut touched = Vec::new();
         {
@@ -437,14 +471,14 @@ fn move_columns(s: &mut Session, p: &Json) -> Result<Json> {
         for cell in touched {
             cx.touch(sheet, cell);
         }
-        rewrite(&mut cx.wb, &name, &Edit::Move { from: source, to_row: 0, to_col: destination });
+        let movement = Edit::Move { from: source, to_row: 0, to_col: destination };
+        rewrite(&mut cx.wb, &name, &movement);
+        cx.record(sheet, &movement);
 
-        {
-            let sh = cx.sheet_mut(sheet)?;
-            sh.cells.shift_cols(delete_at + count, -(count as i64));
-            shift_sheet_features(sh, Axis::Cols, delete_at, count, false);
-        }
-        rewrite(&mut cx.wb, &name, &Edit::Delete { axis: Axis::Cols, at: delete_at, count });
+        // The source columns are empty now; deleting them closes the gap.
+        let delete = Edit::Delete { axis: Axis::Cols, at: delete_at, count };
+        apply_shift(&mut cx.wb, sheet, &delete)?;
+        cx.record(sheet, &delete);
         *cx.sel = crate::Selection {
             active: CellRef::new(active_row, final_start),
             anchor: CellRef::new(active_row, final_start),
@@ -470,17 +504,9 @@ fn insert_cells(s: &mut Session, p: &Json) -> Result<Json> {
     if let Some(sh) = s.doc()?.wb.sheet(sheet) {
         check_table_shift(sh, &e)?;
     }
-    let right = shift == "right";
     let out = edit(s, |cx| {
-        let sh = cx.sheet_mut(sheet)?;
-        if right {
-            sh.cells.shift_cols_in_rows(r.start.row, r.end.row, r.start.col, r.width() as i64);
-        } else {
-            sh.cells.shift_rows_in_cols(r.start.col, r.end.col, r.start.row, r.height() as i64);
-        }
-        shift_cell_features(sh, &e);
-        let name = cx.wb.sheet(sheet).map(|s| s.name.clone()).unwrap_or_default();
-        rewrite(&mut cx.wb, &name, &e);
+        apply_shift(&mut cx.wb, sheet, &e)?;
+        cx.record(sheet, &e);
         cx.structural = true;
         Ok(Json::Null)
     })?;
@@ -501,21 +527,9 @@ fn delete_cells(s: &mut Session, p: &Json) -> Result<Json> {
     if let Some(sh) = s.doc()?.wb.sheet(sheet) {
         check_table_shift(sh, &e)?;
     }
-    let left = shift == "left";
     let out = edit(s, |cx| {
-        let name = cx.wb.sheet(sheet).map(|s| s.name.clone()).unwrap_or_default();
-        {
-            let sh = cx.sheet_mut(sheet)?;
-            sh.take_cells(r);
-            if left {
-                sh.cells.shift_cols_in_rows(r.start.row, r.end.row, r.end.col + 1, -(r.width() as i64));
-            } else {
-                sh.cells.shift_rows_in_cols(r.start.col, r.end.col, r.end.row + 1, -(r.height() as i64));
-            }
-            shift_cell_features(sh, &e);
-        }
-        // References into the deleted cells become #REF!; the rest move.
-        rewrite(&mut cx.wb, &name, &e);
+        apply_shift(&mut cx.wb, sheet, &e)?;
+        cx.record(sheet, &e);
         cx.structural = true;
         Ok(Json::Null)
     })?;

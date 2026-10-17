@@ -113,6 +113,8 @@ pub struct DocState {
     /// The format `path`'s content was recognised as when its extension doesn't name one (an
     /// XLSX called `budget.dat`): Save writes it back in that format.
     pub content_kind: Option<io::FileKind>,
+    /// Structural edits committed since co-editing last took them ([`collab::take_struct_log`]).
+    pub struct_log: Vec<collab::StructEdit>,
 }
 
 static NEXT_UID: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
@@ -139,6 +141,7 @@ impl DocState {
             sheet_selections: vec![],
             unlocked_ranges: vec![],
             content_kind: None,
+            struct_log: Vec::new(),
         }
     }
     pub fn is_dirty(&self) -> bool {

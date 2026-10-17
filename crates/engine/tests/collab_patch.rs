@@ -1,6 +1,6 @@
-//! Co-editing content patches: whatever a command does, the patch diffed from its before and
-//! after workbooks, applied to another copy of the before workbook, gives the same workbook:
-//! same content, styles, settings and recalculated values.
+//! Co-editing ops: whatever a command does, its op (structural edits plus a content patch),
+//! applied to another copy of the before workbook, gives the same workbook: same content,
+//! styles, settings and recalculated values.
 
 use std::sync::Arc;
 
@@ -8,26 +8,32 @@ use gridcraft_engine::model::Workbook;
 use gridcraft_engine::{DocState, Session, collab};
 use serde_json::{Value as Json, json};
 
-/// Runs `id` on `s` and checks that its patch reproduces the result on a separate copy.
-fn replicate(s: &mut Session, id: &str, params: Json) {
-    let before: Arc<Workbook> = s.active().map(|d| d.wb.clone()).unwrap_or_default();
-    if let Err(e) = s.run(id, params.clone()) {
-        panic!("{id} {params}: {e}");
+fn sales() -> Session {
+    let mut s = Session::new();
+    if let Err(e) = s.run("file.new", json!({"sample": "sales"})) {
+        panic!("sample: {e}");
     }
+    s
+}
+
+/// Runs `id` on `s` and checks that its op reproduces the result on a separate copy.
+fn replicate(s: &mut Session, id: &str, params: Json) -> collab::Op {
+    let before: Arc<Workbook> = s.active().map(|d| d.wb.clone()).unwrap_or_default();
+    let (_, op) = collab::run_captured(s, id, params.clone()).unwrap_or_else(|e| panic!("{id} {params}: {e}"));
     let after: Arc<Workbook> = s.active().map(|d| d.wb.clone()).unwrap_or_default();
-    let patch = collab::make_patch(&before, &after).unwrap_or_else(|e| panic!("{id}: diff: {e}"));
 
     // It travels as JSON.
-    let wire = serde_json::to_string(&patch).unwrap_or_else(|e| panic!("{id}: {e}"));
-    let patch: collab::Patch = serde_json::from_str(&wire).unwrap_or_else(|e| panic!("{id}: {e}\n{wire}"));
+    let wire = serde_json::to_string(&op).unwrap_or_else(|e| panic!("{id}: {e}"));
+    let op: collab::Op = serde_json::from_str(&wire).unwrap_or_else(|e| panic!("{id}: {e}\n{wire}"));
 
     // Someone else's copy of the workbook as it was before the command.
     let mut other = DocState::new((*before).clone(), None, "other".into());
-    collab::apply_to_doc(&mut other, &patch).unwrap_or_else(|e| panic!("{id}: apply: {e}"));
+    collab::apply_op(&mut other, &op).unwrap_or_else(|e| panic!("{id}: apply: {e}"));
 
     let rest = collab::make_patch(&after, &other.wb).unwrap_or_else(|e| panic!("{id}: {e}"));
-    assert!(rest.is_empty(), "{id} {params}: the copy differs after the patch: {rest:?}\npatch: {wire}");
+    assert!(rest.is_empty(), "{id} {params}: the copy differs after the op: {rest:?}\nop: {wire}");
     assert_same_values(id, &after, &other.wb);
+    op
 }
 
 /// Every cell's value, cached formula results included, matches.
@@ -46,11 +52,8 @@ fn assert_same_values(id: &str, a: &Workbook, b: &Workbook) {
 }
 
 #[test]
-fn every_kind_of_edit_replicates_through_its_patch() {
-    let mut s = Session::new();
-    if let Err(e) = s.run("file.new", json!({"sample": "sales"})) {
-        panic!("sample: {e}");
-    }
+fn every_kind_of_edit_replicates_through_its_op() {
+    let mut s = sales();
     let steps: Vec<(&str, Json)> = vec![
         // Cells: constants, formulas, a dependent recalculation, clearing.
         ("cell.set", json!({"cell": "B20", "input": "Notes"})),
@@ -66,11 +69,17 @@ fn every_kind_of_edit_replicates_through_its_patch() {
         ("home.borders", json!({"range": "B20:C21", "preset": "thickOutside"})),
         ("home.wrapText", json!({"range": "B20", "on": true})),
         ("home.mergeCenter", json!({"range": "B22:D22"})),
-        // Rows and columns.
+        // Rows, columns and cells: shifts and moves.
         ("home.rowHeight", json!({"rows": "20:21", "height": 30})),
         ("home.hideRows", json!({"rows": "23:24"})),
         ("home.insertRows", json!({"rows": "6:7"})),
         ("home.deleteColumns", json!({"cols": "H:H"})),
+        ("home.deleteRows", json!({"rows": "25:25,27:28"})),
+        ("home.insertCells", json!({"range": "C30:D31", "shift": "down"})),
+        ("home.deleteCells", json!({"range": "C30:C31", "shift": "left"})),
+        ("sheet.moveColumns", json!({"cols": "E:E", "before": 1})),
+        ("edit.cut", json!({"range": "B20:C21"})),
+        ("edit.paste", json!({"at": "B40"})),
         // Sheet features.
         (
             "home.conditionalFormat",
@@ -111,18 +120,48 @@ fn every_kind_of_edit_replicates_through_its_patch() {
 
 #[test]
 fn an_edit_that_changes_nothing_sends_nothing() {
-    let mut s = Session::new();
-    if let Err(e) = s.run("file.new", json!({"sample": "sales"})) {
-        panic!("sample: {e}");
-    }
-    let before = s.active().map(|d| d.wb.clone()).unwrap_or_default();
+    let mut s = sales();
     // Selecting and switching sheets is each person's own view.
     for (id, params) in [("selection.set", json!({"range": "D7"})), ("sheet.activate", json!({"sheet": 0}))] {
-        if let Err(e) = s.run(id, params) {
-            panic!("{id}: {e}");
-        }
+        let (_, op) = collab::run_captured(&mut s, id, params).unwrap_or_else(|e| panic!("{id}: {e}"));
+        assert!(op.is_empty(), "{id}: {op:?}");
     }
-    let after = s.active().map(|d| d.wb.clone()).unwrap_or_default();
-    let patch = collab::make_patch(&before, &after).unwrap_or_else(|e| panic!("{e}"));
-    assert!(patch.is_empty(), "{patch:?}");
+}
+
+/// A structural edit travels as the shift, not as every cell it moved: the others replay it.
+#[test]
+fn a_structural_edit_sends_the_shift_not_the_cells() {
+    let mut s = sales();
+    for (id, params) in [
+        ("home.insertRows", json!({"rows": "3:4"})),
+        ("home.deleteColumns", json!({"cols": "B:B"})),
+        ("home.insertCells", json!({"range": "M20:M21", "shift": "right"})),
+    ] {
+        let op = replicate(&mut s, id, params);
+        assert_eq!(op.edits.len(), 1, "{id}: {:?}", op.edits);
+        let cells: usize = op.patch.sheets.iter().map(|sp| sp.cells.len()).sum();
+        assert!(cells <= 4, "{id}: {cells} cells in the patch: the shift should account for them");
+    }
+}
+
+/// An op naming a place outside the worksheet is refused, and the copy stays as it was.
+#[test]
+fn a_hostile_op_is_refused() {
+    let s = sales();
+    let Some(d) = s.active() else { panic!("no document") };
+    let sheet = d.wb.sheets.first().map(|sh| sh.id).unwrap_or_default();
+    let mut other = DocState::new((*d.wb).clone(), None, "other".into());
+    let before = other.wb.clone();
+    for edit in [
+        json!({"kind": "insert", "sheet": sheet, "dir": "rows", "at": 0, "count": 0}),
+        json!({"kind": "insert", "sheet": sheet, "dir": "rows", "at": 5, "count": 2_000_000_000u32}),
+        json!({"kind": "delete", "sheet": sheet, "dir": "cols", "at": 20_000, "count": 1}),
+        json!({"kind": "insertCells", "sheet": sheet, "dir": "rows", "range": {"start": {"row": 9, "col": 0}, "end": {"row": 2, "col": 0}}}),
+        // Pushes the sales data off the bottom of the sheet.
+        json!({"kind": "insert", "sheet": sheet, "dir": "rows", "at": 0, "count": 1_048_570}),
+    ] {
+        let op: collab::Op = serde_json::from_value(json!({"edits": [edit]})).unwrap_or_else(|e| panic!("{e}"));
+        assert!(collab::apply_op(&mut other, &op).is_err(), "{op:?} was accepted");
+        assert!(Arc::ptr_eq(&other.wb, &before), "a refused op changed the copy");
+    }
 }

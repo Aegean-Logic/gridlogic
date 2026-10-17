@@ -314,6 +314,8 @@ pub struct Ctx<'a> {
     /// The command applied sheet protection itself (row/column inserts and deletes the
     /// protection allows), so cells it shifts aren't refused as edits of locked cells.
     pub protection_checked: bool,
+    /// Structural edits made, in order, for co-editing ([`Ctx::record`]).
+    pub edits: Vec<crate::collab::StructEdit>,
 }
 
 pub(crate) fn edit<R>(s: &mut Session, f: impl FnOnce(&mut Ctx) -> Result<R>) -> Result<R> {
@@ -331,9 +333,17 @@ pub(crate) fn commit<R>(d: &mut DocState, f: impl FnOnce(&mut Ctx) -> Result<R>)
     #[allow(clippy::disallowed_methods)]
     let t0 = if cfg!(target_arch = "wasm32") { None } else { std::env::var_os("GRIDCRAFT_PROFILE").map(|_| std::time::Instant::now()) };
     let mut sel = d.selection.clone();
-    let mut ctx = Ctx { wb: (*d.wb).clone(), changed: Vec::new(), structural: false, sel: &mut sel, fit_rows: Vec::new(), protection_checked: false };
+    let mut ctx = Ctx {
+        wb: (*d.wb).clone(),
+        changed: Vec::new(),
+        structural: false,
+        sel: &mut sel,
+        fit_rows: Vec::new(),
+        protection_checked: false,
+        edits: Vec::new(),
+    };
     let r = f(&mut ctx)?;
-    let Ctx { mut wb, changed, structural, mut fit_rows, protection_checked, .. } = ctx;
+    let Ctx { mut wb, changed, structural, mut fit_rows, protection_checked, edits, .. } = ctx;
     if !protection_checked {
         check_protection(&d.wb, &wb, &d.unlocked_ranges)?;
     }
@@ -364,6 +374,7 @@ pub(crate) fn commit<R>(d: &mut DocState, f: impl FnOnce(&mut Ctx) -> Result<R>)
     }
     // A sheet the edit added (or copied) gets its id here, so every sheet always has one.
     wb.ensure_sheet_ids();
+    d.struct_log.extend(edits);
     d.wb = std::sync::Arc::new(wb);
     d.selection = sel;
     Ok(r)
@@ -523,5 +534,12 @@ impl Ctx<'_> {
     }
     pub fn touch(&mut self, sheet: usize, c: CellRef) {
         self.changed.push((sheet, c));
+    }
+    /// Notes a structural edit on sheet `si`, made just now, for co-editing: the others shift
+    /// their copies the same way, and their edits made meanwhile follow the cells.
+    pub fn record(&mut self, si: usize, e: &gridcraft_formula::adjust::Edit) {
+        if let Some(se) = crate::collab::StructEdit::of(&self.wb, si, e) {
+            self.edits.push(se);
+        }
     }
 }
