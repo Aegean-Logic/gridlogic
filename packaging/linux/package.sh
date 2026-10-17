@@ -60,6 +60,8 @@ install -Dm755 "$BIN/gridcraft" "$STAGE/usr/bin/gridcraft"
 install -Dm755 "$BIN/gridcraft-cli" "$STAGE/usr/bin/gridcraft-cli"
 "${CROSS_COMPILE:-}strip" "$STAGE/usr/bin/gridcraft" "$STAGE/usr/bin/gridcraft-cli" 2>/dev/null || true
 install -Dm644 "$HERE/$APP_ID.desktop" "$STAGE/usr/share/applications/$APP_ID.desktop"
+# gridlogic:// links (Open in Desktop App from Nextcloud): a hidden entry, as it takes a URL (%u).
+install -Dm644 "$HERE/$APP_ID.links.desktop" "$STAGE/usr/share/applications/$APP_ID.links.desktop"
 install -Dm644 "$HERE/$APP_ID.mime.xml" "$STAGE/usr/share/mime/packages/$APP_ID.xml"
 mkdir -p "$STAGE/usr/share/metainfo"
 sed -e "s/@VERSION@/$VERSION/g" -e "s/@DATE@/$GRIDCRAFT_BUILD_DATE/g" \

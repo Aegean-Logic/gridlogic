@@ -211,6 +211,8 @@ pub struct Services {
     pub print: Option<Box<dyn Fn(&[u8])>>,
     /// The cloud the workbook can be shared through (Nextcloud): the Share dialog uses it.
     pub cloud: Option<share::Cloud>,
+    /// Web: "Open in Desktop App": the page opens the workbook in GridLogic on this computer.
+    pub open_in_desktop: Option<Box<dyn Fn()>>,
 }
 
 /// Shared queue of files read asynchronously (browser file picker, drag and drop).

@@ -1,0 +1,10 @@
+[Desktop Entry]
+Type=Application
+Name=GridLogic
+Comment=Open workbooks from Nextcloud in GridLogic
+Exec=gridcraft %u
+TryExec=gridcraft
+Icon=uk.co.aegeanlogic.gridlogic
+Terminal=false
+NoDisplay=true
+MimeType=x-scheme-handler/gridlogic;

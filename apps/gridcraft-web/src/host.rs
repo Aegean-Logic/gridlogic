@@ -43,6 +43,11 @@
 //! - `gridcraft:cloud:reply` (from the parent): `{ id, ok, json?, error? }`, its answer (`json`
 //!   as JSON text when `ok`, else `error`).
 //!
+//! Desktop (with `desktop=1` in the page's URL):
+//!
+//! - `gridcraft:openDesktop` (to the parent): Open in Desktop App was chosen; the page opens the
+//!   file in GridLogic on this computer (a `gridlogic://open` link).
+//!
 //! Only the parent window on the page's own origin is heard or answered. In host mode the page
 //! starts with an empty workbook instead of a sample, and the parent guards leaving the page.
 
@@ -175,6 +180,15 @@ impl Bridge {
         if !author.is_empty() {
             app.session.prefs.user_name = author;
         }
+    }
+
+    /// `desktop=1`: the page can open the workbook in the desktop app (`gridcraft:openDesktop`,
+    /// to the page): the title bar offers Open in Desktop App.
+    pub fn offer_desktop(&self, services: &mut Services) {
+        let bridge = self.clone();
+        services.open_in_desktop = Some(Box::new(move || {
+            bridge.send(&[("type", "gridcraft:openDesktop".into())]);
+        }));
     }
 
     pub fn post_ready(&self) {

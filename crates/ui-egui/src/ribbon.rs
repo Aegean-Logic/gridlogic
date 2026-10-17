@@ -159,6 +159,21 @@ pub fn title_bar(app: &mut SheetApp, ui: &mut Ui) {
                 } else {
                     egui::Popup::menu(&share).show(|ui| exports(app, ui));
                 }
+                // In the browser: carry on in GridLogic on this computer, as Excel for the web's
+                // Open in Desktop App does (together with everyone still editing here).
+                // A narrow window (a phone, a side-by-side browser) gets the icon alone.
+                let roomy = ui.available_width() > 640.0;
+                if app.services.open_in_desktop.is_some() {
+                    let hint = "Open in Desktop App: edit this workbook in GridLogic on this computer";
+                    let clicked = if roomy {
+                        small_button(ui, Icon::OpenFolder, "Open in Desktop App", hint, false).clicked()
+                    } else {
+                        icon_button(ui, Icon::OpenFolder, t.text_dim, hint, vec2(28.0, ch)).clicked()
+                    };
+                    if clicked && let Some(open) = &app.services.open_in_desktop {
+                        open();
+                    }
+                }
                 let __k = icon_button(ui, Icon::Comment, t.text_dim, "Comments", vec2(28.0, ch));
                 control_keytip(app, ui, &__k, "comments");
                 if __k.clicked() {
@@ -174,9 +189,30 @@ pub fn title_bar(app: &mut SheetApp, ui: &mut Ui) {
                     act(app, "view.darkMode", json!({}));
                 }
                 theme.context_menu(|ui| theme_choices(app, ui));
+                // Who else is editing (co-editing), as Excel shows co-authors: their initials in
+                // their colour, their name on hover.
+                // (Not in a narrow window: the browser page lists who's editing above the editor.)
+                let shown = if ui.available_width() > 520.0 { 5 } else { 0 };
+                for p in app.presence.iter().take(shown) {
+                    let (r, resp) = ui.allocate_exact_size(vec2(24.0, 24.0), Sense::hover());
+                    ui.painter().circle_filled(r.center(), 11.0, p.color);
+                    ui.painter().text(r.center(), Align2::CENTER_CENTER, initials(&p.name), theme::ui_bold(10.5), Color32::WHITE);
+                    resp.on_hover_text(format!("{} is editing", p.name));
+                }
+                if shown > 0 && app.presence.len() > shown {
+                    ui.label(egui::RichText::new(format!("+{}", app.presence.len() - shown)).color(t.text_dim));
+                }
             });
         });
     });
+}
+
+/// A person's initials: the first letters of their first and last names.
+fn initials(name: &str) -> String {
+    let parts: Vec<&str> = name.split_whitespace().collect();
+    let first = parts.first().and_then(|p| p.chars().next());
+    let last = parts.get(1..).and_then(|rest| rest.last()).and_then(|p| p.chars().next());
+    first.into_iter().chain(last).flat_map(char::to_uppercase).collect::<String>().chars().take(2).collect()
 }
 
 pub fn show(app: &mut SheetApp, ui: &mut Ui) {

@@ -1,6 +1,6 @@
 # UI parity
 
-> **Last reviewed:** 2026-10-10 · **Last updated:** 2026-10-17 · **Change:** minor (Nextcloud in the File view, AutoSave and sync conflicts) · **Target:** Microsoft Excel (Microsoft 365), Excel for Mac 16.113.4
+> **Last reviewed:** 2026-10-10 · **Last updated:** 2026-10-17 · **Change:** minor (desktop co-editing, Open in Desktop App) · **Target:** Microsoft Excel (Microsoft 365), Excel for Mac 16.113.4
 
 Interaction, controls and feel, against Excel. Part of [target-app-parity.md](target-app-parity.md).
 **UI/UX fidelity: ~55% ready, 50–80 h** (estimated). Ribbon command coverage is measured
@@ -169,6 +169,7 @@ scrollbar bugs 2–4 · pixel/feel pass against observed Excel 7–12.
 
 | Date | Change | Summary |
 |---|---|---|
+| 2026-10-17 | minor | The desktop co-edits a Nextcloud workbook live with the browser; co-authors' initials in the title bar; Open in Desktop App in the browser (`gridlogic://` links) |
 | 2026-10-17 | minor | Nextcloud in the File view (Account, Open, Save As), AutoSave on by default for Nextcloud workbooks and working in an idle window, sync conflicts resolved by the user's choice |
 | 2026-10-17 | minor | Share dialog like Excel's, through Nextcloud, in the browser and on the desktop (Login Flow sign-in, upload, saves sent back) |
 | 2026-10-12 | minor | The File view's recent list tells when each workbook was last changed, read off the UI thread |

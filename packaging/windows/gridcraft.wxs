@@ -178,6 +178,15 @@
         <RegistryValue Root="HKLM" Key="Software\Classes\GridLogic.TextData\DefaultIcon" Value="&quot;[#GridcraftExe]&quot;,0" Type="string" />
         <RegistryValue Root="HKLM" Key="Software\Classes\GridLogic.TextData\shell\open\command" Value="&quot;[#GridcraftExe]&quot; &quot;%1&quot;" Type="string" />
 
+        <!-- gridlogic:// links: Open in Desktop App from Nextcloud in the browser
+             (`gridlogic://open?server=…&path=…`, handled in apps/gridcraft/src/nextcloud.rs).
+             Windows looks for a value named "URL Protocol"; its content isn't read (WiX rejects an
+             empty Value, so it names the scheme). -->
+        <RegistryValue Root="HKLM" Key="Software\Classes\gridlogic" Value="URL:GridLogic" Type="string" />
+        <RegistryValue Root="HKLM" Key="Software\Classes\gridlogic" Name="URL Protocol" Value="gridlogic" Type="string" />
+        <RegistryValue Root="HKLM" Key="Software\Classes\gridlogic\DefaultIcon" Value="&quot;[#GridcraftExe]&quot;,0" Type="string" />
+        <RegistryValue Root="HKLM" Key="Software\Classes\gridlogic\shell\open\command" Value="&quot;[#GridcraftExe]&quot; &quot;%1&quot;" Type="string" />
+
         <!-- "Open with": Windows reads only the value names under OpenWithProgids; the data is
              ignored (WiX rejects an empty Value, so it repeats the ProgId). -->
         <RegistryValue Root="HKLM" Key="Software\Classes\.xlsx\OpenWithProgids" Name="GridLogic.Workbook" Value="GridLogic.Workbook" Type="string" />

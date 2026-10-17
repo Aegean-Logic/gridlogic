@@ -65,6 +65,8 @@ impl eframe::App for App {
         self.0.ui(ui);
     }
     fn on_exit(&mut self) {
+        // Leave a shared workbook's session (the others see this person go).
+        self.1.shutdown(&mut self.0);
         print::finish_pending_jobs();
         save_prefs(&self.0);
         // macOS (#117): end the process here, before eframe tears the window down. AccessKit's
@@ -282,6 +284,7 @@ fn main() -> eframe::Result<()> {
     let mut control_port: Option<u16> = std::env::var("GRIDCRAFT_CONTROL_PORT").ok().and_then(|p| p.parse().ok());
     let mut sample: Option<String> = None;
     let mut files: Vec<String> = Vec::new();
+    let mut links: Vec<String> = Vec::new();
     let mut i = 0;
     while i < args.len() {
         match args[i].as_str() {
@@ -294,6 +297,8 @@ fn main() -> eframe::Result<()> {
                 sample = Some(args.get(i).cloned().unwrap_or_else(|| "sales".into()));
             }
             a if a.starts_with("-psn_") => {}
+            // "Open in Desktop App" in the browser: a Nextcloud file (`nextcloud.rs`).
+            a if a.starts_with("gridlogic:") => links.push(a.to_string()),
             a => files.push(a.to_string()),
         }
         i += 1;
@@ -322,11 +327,16 @@ fn main() -> eframe::Result<()> {
         session.new_workbook();
     }
     // Nextcloud, as OneDrive is to Excel: the Share dialog's cloud.
-    let nextcloud = nextcloud::Nextcloud::new(
+    let mut nextcloud = nextcloud::Nextcloud::new(
         config_dir().filter(|_| prefs_enabled()).map(|d| d.join("nextcloud.json")),
         cache_dir().filter(|_| prefs_enabled()),
         open_with_system,
     );
+    for link in &links {
+        if !nextcloud.open_link(link) {
+            log::warn!("not a GridLogic link: {link}");
+        }
+    }
     let mut app = SheetApp::new(session, services(nextcloud.cloud()));
     app.watch_desktop_theme();
     app.after_engine(); // Show warnings from the sample.

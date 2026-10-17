@@ -17,6 +17,8 @@ use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex, MutexGuard};
 use std::time::{Duration, SystemTime};
 
+mod coedit;
+
 use gridcraft_ui_egui::SheetApp;
 use gridcraft_ui_egui::share::{Cloud, CloudInbox};
 use serde::{Deserialize, Serialize};
@@ -115,6 +117,14 @@ struct State {
     /// what to keep ([`resolve`]); and those not yet put to the user.
     conflicted: HashSet<String>,
     conflicts: Vec<(String, String)>,
+    /// Sessions joined for files just downloaded, waiting for their workbook to open.
+    joined: Vec<(String, coedit::Joined)>,
+    /// Files downloaded again to rejoin their session: reopen, then start sharing.
+    rejoined: Vec<(String, coedit::Joined)>,
+    /// The local copy being co-edited: its saves go to the session, not the save-back.
+    shared: Option<String>,
+    /// Files to open (from "Open in Desktop App").
+    open_now: Vec<String>,
 }
 
 /// Records that `stored` changed and writes it out (left for the next frame if that fails).
@@ -154,6 +164,12 @@ pub struct Nextcloud {
     /// just saved, so its file is looked at at once (an idle window draws no frames to wait for).
     saved_seen: HashMap<u64, usize>,
     open_url: fn(&str),
+    /// The workbook being co-edited live, if any.
+    coedit: Option<coedit::Coedit>,
+    /// Joined sessions waiting for their workbook to open, since when.
+    pending_joins: Vec<(String, coedit::Joined, f64)>,
+    /// A `gridlogic://open` link waiting to be followed: (server, path, sign-in asked for).
+    link: Option<(String, String, bool)>,
 }
 
 fn lock(state: &Mutex<State>) -> MutexGuard<'_, State> {
@@ -174,6 +190,9 @@ impl Nextcloud {
             modified: HashMap::new(),
             saved_seen: HashMap::new(),
             open_url,
+            coedit: None,
+            pending_joins: Vec::new(),
+            link: None,
         }
     }
 
@@ -224,6 +243,8 @@ impl Nextcloud {
                 self.modified.remove(&path);
             }
         }
+        self.follow_link(app, ctx);
+        self.poll_coedit(app, ctx);
         let mut just_saved = false;
         for d in app.session.documents() {
             let stamp = std::sync::Arc::as_ptr(&d.saved) as usize;
@@ -257,6 +278,144 @@ impl Nextcloud {
                 app.toast = Some((text, gridcraft_ui_egui::now_ms()));
             }
         }
+    }
+
+    /// Live co-editing: starts sessions joined for files just opened, and runs the shared one.
+    fn poll_coedit(&mut self, app: &mut SheetApp, ctx: &egui::Context) {
+        let now = ctx.input(|i| i.time);
+        let (rejoined, joined, open_now) = {
+            let mut s = lock(&self.state);
+            (std::mem::take(&mut s.rejoined), std::mem::take(&mut s.joined), std::mem::take(&mut s.open_now))
+        };
+        for local in open_now {
+            app.open_path(&local);
+        }
+        for (local, j) in rejoined {
+            // The copy here is behind the session: open the file as it is now in its place.
+            if let Some(i) = app.session.documents().iter().position(|d| d.path.as_deref().is_some_and(|p| same_path(p, &local))) {
+                app.session.close_document(i);
+            }
+            app.open_path(&local);
+            self.pending_joins.push((local, j, now));
+        }
+        self.pending_joins.extend(joined.into_iter().map(|(l, j)| (l, j, now)));
+        for (local, j, since) in std::mem::take(&mut self.pending_joins) {
+            let open = app.session.active().and_then(|d| d.path.clone()).is_some_and(|p| same_path(&p, &local));
+            if self.coedit.is_some() || (!open && now - since > 10.0) {
+                // One shared workbook at a time; a workbook that never opened isn't shared.
+                continue;
+            }
+            if !open {
+                self.pending_joins.push((local, j, since));
+                continue;
+            }
+            match coedit::Coedit::start(app, j, local.clone(), self.state.clone(), ctx) {
+                Ok(c) => {
+                    lock(&self.state).shared = Some(local);
+                    self.coedit = Some(c);
+                }
+                Err(e) => {
+                    log::warn!("co-editing {local}: {e}");
+                    app.toast = Some(("This workbook opened without live co-editing.".into(), gridcraft_ui_egui::now_ms()));
+                }
+            }
+        }
+        let Some(c) = self.coedit.as_mut() else { return };
+        if app.session.collab_pending() {
+            // An edit not sent yet (made after this frame's poll): come back for it, even in an
+            // idle window.
+            ctx.request_repaint_after(Duration::from_millis(150));
+        }
+        match c.poll(app, now) {
+            coedit::Status::Going => {}
+            coedit::Status::Over => {
+                c.stop(app);
+                self.coedit = None;
+                lock(&self.state).shared = None;
+            }
+            coedit::Status::Rejoin => {
+                c.stop(app);
+                let (local, remote) = (c.local.clone(), c.remote.clone());
+                self.coedit = None;
+                lock(&self.state).shared = None;
+                app.toast = Some(("Reconnecting to the shared workbook…".into(), gridcraft_ui_egui::now_ms()));
+                let (state, ctx) = (self.state.clone(), ctx.clone());
+                let _ = std::thread::Builder::new().name("nextcloud rejoin".into()).spawn(move || {
+                    match download_and_join(&state, &remote, true) {
+                        Ok((_, Some(j))) => lock(&state).rejoined.push((local, j)),
+                        Ok((_, None)) => {}
+                        Err(e) => lock(&state).notices.push(("Co-editing stopped".into(), e, true)),
+                    }
+                    ctx.request_repaint();
+                });
+            }
+        }
+    }
+
+    /// Before quitting: leave the shared session.
+    pub fn shutdown(&mut self, app: &mut SheetApp) {
+        if let Some(c) = self.coedit.take() {
+            c.stop(app);
+        }
+    }
+
+    /// "Open in Desktop App" from the browser: `gridlogic://open?server=…&path=…`. The file opens
+    /// once signed in to that server (File › Account is shown, with its address, until then).
+    pub fn open_link(&mut self, url: &str) -> bool {
+        let Some(query) = url.strip_prefix("gridlogic://open?").or_else(|| url.strip_prefix("gridlogic://open/?")) else { return false };
+        let mut server = String::new();
+        let mut path = String::new();
+        for pair in query.split('&') {
+            let (k, v) = pair.split_once('=').unwrap_or((pair, ""));
+            match k {
+                "server" => server = decode(&v.replace('+', " ")),
+                "path" => path = decode(&v.replace('+', " ")),
+                _ => {}
+            }
+        }
+        let Ok(server) = normalise_server(&server) else { return false };
+        if path.trim_matches('/').is_empty() {
+            return false;
+        }
+        self.link = Some((server, path.trim_matches('/').to_string(), false));
+        true
+    }
+
+    fn follow_link(&mut self, app: &mut SheetApp, ctx: &egui::Context) {
+        let Some((server, path, asked)) = self.link.clone() else { return };
+        if self.server().is_some_and(|s| s.eq_ignore_ascii_case(&server)) {
+            self.link = None;
+            self.open_remote(ctx, path);
+        } else if !asked {
+            // Signed out, or into another server: sign in to this one first (once; the file
+            // opens when the sign-in is done).
+            self.link = Some((server.clone(), path.clone(), true));
+            app.cloud_files.server = server.trim_start_matches("https://").to_string();
+            app.open_backstage(gridcraft_ui_egui::backstage::Page::Account);
+            app.toast = Some((format!("Sign in to {server} to open {path}."), gridcraft_ui_egui::now_ms()));
+        }
+    }
+
+    /// Opens `remote` in this server's Nextcloud ("Open in Desktop App"): downloaded, joined, then
+    /// opened by the next frame.
+    fn open_remote(&self, ctx: &egui::Context, remote: String) {
+        let (state, ctx) = (self.state.clone(), ctx.clone());
+        let _ = std::thread::Builder::new().name("nextcloud open".into()).spawn(move || {
+            match open_file(&state, &remote, &[]) {
+                Ok(r) => {
+                    if let Some(local) = r.get("localPath").and_then(Json::as_str) {
+                        lock(&state).open_now.push(local.to_string());
+                    }
+                }
+                Err(e) => lock(&state).notices.push(("Couldn't open from Nextcloud".into(), e, true)),
+            }
+            ctx.request_repaint();
+        });
+    }
+
+    /// The server signed in to, if any (`https://cloud.example.com`).
+    fn server(&self) -> Option<String> {
+        lock(&self.state).stored.account.as_ref().map(|a| a.server.clone())
     }
 
     /// The active workbook, for a request about it.
@@ -297,6 +456,19 @@ impl Nextcloud {
             let Some(path) = d.path.as_deref().and_then(|p| tie_key(&s.stored.files, p)) else { continue };
             let path = &path;
             let Some(remote) = s.stored.files.get(path).cloned() else { continue };
+            if s.shared.as_deref().is_some_and(|p| same_path(p, path)) {
+                // Co-edited: the session saves the file; saves here only keep the copy, so its
+                // record stays in step (opening it again fetches Nextcloud's version).
+                let now = mtime(Path::new(path));
+                if remote.synced != now
+                    && let Some(r) = s.stored.files.get_mut(path)
+                {
+                    r.synced = now;
+                    persist(&mut s);
+                }
+                self.modified.remove(path);
+                continue;
+            }
             let modified = std::fs::metadata(path).and_then(|m| m.modified()).ok();
             let Some(seen) = self.modified.get(path).copied() else {
                 // First look since the app started (or since it came from Nextcloud): a file saved
@@ -713,22 +885,59 @@ fn open_file(state: &Mutex<State>, remote: &str, open: &[String]) -> Result<Json
             return Ok(json!({"localPath": local_text, "unsent": true}));
         }
     }
+    let (_, joined) = download_and_join(state, &remote, false)?;
+    let shared = joined.is_some();
+    if let Some(j) = joined {
+        lock(state).joined.push((local_text.clone(), j));
+    }
+    Ok(json!({"localPath": local_text, "shared": shared}))
+}
+
+/// Downloads a Nextcloud file to its copy here, tied to it, and joins its co-editing session
+/// pinned to the version downloaded (unless a workbook is co-edited already and this isn't a
+/// rejoin). Without the GridLogic app on the server, the file opens unshared.
+fn download_and_join(state: &Mutex<State>, remote: &str, rejoin: bool) -> Result<(PathBuf, Option<coedit::Joined>), String> {
+    let local = cache_path(state, remote)?;
+    let local_text = local.to_string_lossy().to_string();
     let nc = Connection::open(state)?;
-    let r = nc.send("GET", &nc.dav(&remote), &[], Vec::new())?;
-    match r.status {
-        200 => {}
-        404 => return Err("That file isn't in Nextcloud any more.".into()),
-        s => return Err(format!("Nextcloud answered {s} while opening the file.")),
+    let share = rejoin || lock(state).shared.is_none();
+    let mut file_id = None;
+    for attempt in 0..6 {
+        let r = nc.send("GET", &nc.dav(remote), &[], Vec::new())?;
+        match r.status {
+            200 => {}
+            404 => return Err("That file isn't in Nextcloud any more.".into()),
+            s => return Err(format!("Nextcloud answered {s} while opening the file.")),
+        }
+        if let Some(dir) = local.parent() {
+            std::fs::create_dir_all(dir).map_err(|e| format!("Couldn't make {}: {e}", dir.display()))?;
+        }
+        std::fs::write(&local, &r.body).map_err(|e| format!("Couldn't write {}: {e}", local.display()))?;
+        {
+            let mut s = lock(state);
+            s.stored.files.insert(local_text.clone(), Remote { path: remote.to_string(), etag: r.etag.clone(), synced: mtime(&local) });
+            s.fresh.push(local_text.clone());
+            persist(&mut s);
+        }
+        let etag = r.etag.clone().unwrap_or_default();
+        if !share || etag.is_empty() {
+            return Ok((local, None));
+        }
+        if file_id.is_none() {
+            file_id = nc.file_id(remote).ok();
+        }
+        let Some(id) = file_id else { return Ok((local, None)) };
+        match coedit::join(&nc, id, &etag, remote) {
+            Ok(Some(j)) => return Ok((local, Some(j))),
+            // Saved for the session since this copy was fetched: fetch it again.
+            Ok(None) => std::thread::sleep(Duration::from_millis(400 << attempt)),
+            Err(e) => {
+                log::warn!("co-editing {remote}: {e}");
+                return Ok((local, None));
+            }
+        }
     }
-    if let Some(dir) = local.parent() {
-        std::fs::create_dir_all(dir).map_err(|e| format!("Couldn't make {}: {e}", dir.display()))?;
-    }
-    std::fs::write(&local, &r.body).map_err(|e| format!("Couldn't write {}: {e}", local.display()))?;
-    let mut s = lock(state);
-    s.stored.files.insert(local_text.clone(), Remote { path: remote, etag: r.etag, synced: mtime(&local) });
-    s.fresh.push(local_text.clone());
-    persist(&mut s);
-    Ok(json!({"localPath": local_text}))
+    Ok((local, None))
 }
 
 /// Save As in Nextcloud: where to save the workbook here (`{localPath}`), tied to `folder/name`
@@ -1186,6 +1395,44 @@ impl Connection {
         self.ocs(method, &endpoint, &[], Some(body))
     }
 
+    /// A call to the GridLogic app's own routes (`/index.php/apps/gridcraft/…`): its status and
+    /// JSON answer. `OCS-APIRequest` lets an app-password call through Nextcloud's CSRF check.
+    fn app_status(&self, method: &str, endpoint: &str, body: &Json) -> Result<(u16, Json), String> {
+        let url = format!("{}/index.php/apps/gridcraft/{endpoint}", self.server);
+        let mut headers = vec![("OCS-APIRequest", "true".to_string()), ("Accept", "application/json".to_string())];
+        let body = if body.is_null() {
+            Vec::new()
+        } else {
+            headers.push(("Content-Type", "application/json".to_string()));
+            serde_json::to_vec(body).map_err(|e| e.to_string())?
+        };
+        let r = self.send(method, &url, &headers, body)?;
+        Ok((r.status, r.json().unwrap_or(Json::Null)))
+    }
+
+    /// [`Connection::app_status`], an error unless it succeeded.
+    fn app(&self, method: &str, endpoint: &str, body: &Json) -> Result<Json, String> {
+        let (status, answer) = self.app_status(method, endpoint, body)?;
+        if (200..300).contains(&status) {
+            return Ok(answer);
+        }
+        let why = answer.get("error").and_then(Json::as_str).map(str::to_string);
+        Err(why.unwrap_or_else(|| format!("Nextcloud answered {status}.")))
+    }
+
+    /// The Nextcloud file id of a file (co-editing sessions are per file id).
+    fn file_id(&self, path: &str) -> Result<u64, String> {
+        let body = r#"<?xml version="1.0"?><d:propfind xmlns:d="DAV:" xmlns:oc="http://owncloud.org/ns"><d:prop><oc:fileid/></d:prop></d:propfind>"#;
+        let headers = [("Depth", "0".to_string()), ("Content-Type", "application/xml".to_string())];
+        let r = self.send("PROPFIND", &self.dav(path), &headers, body.as_bytes().to_vec())?;
+        let text = String::from_utf8_lossy(&r.body);
+        text.split("fileid>")
+            .nth(1)
+            .and_then(|t| t.split('<').next())
+            .and_then(|id| id.trim().parse().ok())
+            .ok_or_else(|| "Nextcloud didn't give the file's id.".into())
+    }
+
     /// Whether the user may share the file (its WebDAV permissions include R).
     fn can_share(&self, path: &str) -> Result<bool, String> {
         let body =
@@ -1259,6 +1506,16 @@ mod tests {
         assert!(!same_kind("C:/x/Budget.ods", "GridLogic/Budget.ods"), "GridLogic doesn't write .ods");
         assert_eq!(encode("a b/ü"), "a%20b%2F%C3%BC");
         assert_eq!(decode("a%20b%2F%C3%BC"), "a b/ü");
+    }
+
+    #[test]
+    fn desktop_links_name_a_server_and_a_file() {
+        let mut nc = Nextcloud::new(None, None, |_| {});
+        assert!(nc.open_link("gridlogic://open?server=http%3A%2F%2Flocalhost%3A8080&path=%2FGridCraft%20Test%2FBudget.xlsx"));
+        assert_eq!(nc.link, Some(("http://localhost:8080".to_string(), "GridCraft Test/Budget.xlsx".to_string(), false)));
+        assert!(!nc.open_link("gridlogic://open?server=cloud.example"), "no file");
+        assert!(!nc.open_link("https://cloud.example/x"), "not a GridLogic link");
+        assert!(!nc.open_link("gridlogic://open?server=a%40evil&path=x.xlsx"), "not a server address");
     }
 
     #[test]

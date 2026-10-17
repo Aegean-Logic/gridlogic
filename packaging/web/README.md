@@ -141,6 +141,13 @@ sharing API; `gridcraft-nextcloud/src/share.js`). The operations are those of
 | `gridcraft:cloud` | to the page | `id`, `op` (an operation above), `params` (JSON text). |
 | `gridcraft:cloud:reply` | from the page | `id`, `ok`, then `json` (the answer as JSON text) when `ok`, otherwise `error` (a sentence for the user). |
 
+### Open in Desktop App
+
+With `desktop=1` in the page's URL, the title bar offers Open in Desktop App. When it's chosen,
+GridLogic sends `gridcraft:openDesktop` (to the page). The page opens the file in GridLogic on
+the computer with a `gridlogic://open?server=<Nextcloud address>&path=<file>` link. The installers
+register the scheme on Windows and Linux; macOS doesn't handle it yet.
+
 ```js
 const frame = document.querySelector("iframe"); // src="/gridcraft/?host=parent&ack=1"
 addEventListener("message", async (event) => {

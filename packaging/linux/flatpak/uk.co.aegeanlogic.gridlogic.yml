@@ -47,6 +47,7 @@ modules:
       - install -Dm755 target/release/gridcraft /app/bin/gridcraft
       - install -Dm755 target/release/gridcraft-cli /app/bin/gridcraft-cli
       - install -Dm644 packaging/linux/uk.co.aegeanlogic.gridlogic.desktop /app/share/applications/uk.co.aegeanlogic.gridlogic.desktop
+      - install -Dm644 packaging/linux/uk.co.aegeanlogic.gridlogic.links.desktop /app/share/applications/uk.co.aegeanlogic.gridlogic.links.desktop
       - install -Dm644 packaging/linux/uk.co.aegeanlogic.gridlogic.mime.xml /app/share/mime/packages/uk.co.aegeanlogic.gridlogic.xml
       - mkdir -p /app/share/icons && cp -R assets/app-icon/hicolor /app/share/icons/
       - >-

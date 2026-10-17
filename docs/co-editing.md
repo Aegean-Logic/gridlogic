@@ -66,6 +66,14 @@ Phase 2 pieces:
 - **Shared links.** Anyone with a link to the file (`/s/{token}`) joins the same session as a
   guest. They use the link's own WebDAV address and `/apps/gridcraft/s/{token}/collab/*`.
   Membership is proved with a random key handed out on join, and edits need an edit link.
+- **The desktop app.** A workbook opened from Nextcloud in GridLogic on a computer
+  (`apps/gridcraft/src/nextcloud/coedit.rs`) joins the same session. It signs in with its app
+  password and calls the same `/apps/gridcraft/collab/*` routes; `OCS-APIRequest` takes it through
+  Nextcloud's CSRF check. A worker thread does what `collab.js` does: pushes ops in order, polls,
+  and writes checkpoints. While shared, Save and AutoSave write checkpoints; they don't send the
+  local copy. The engine shares one workbook at a time, so a second one from Nextcloud opens
+  unshared. "Open in Desktop App" in the browser (`gridlogic://open?server=…&path=…`) opens the
+  file in the desktop app, in the same session.
 
 Engine pieces from phase 1:
 
