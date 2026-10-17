@@ -17,7 +17,7 @@ This is GridLogic's implementation of the shared [release playbook](release-play
 | WiX UpgradeCode `5511327B-F305-41BE-92D0-EB84944E7C4D` (fixed forever) | `packaging/windows/gridcraft.wxs` |
 | File types `.xlsx` `.xlsm` `.xlsb` `.ods` `.csv` `.tsv` | Info.plist (`CFBundleDocumentTypes`), WiX (ProgIds/OpenWithProgids), `.desktop` `MimeType=`, `uk.co.aegeanlogic.gridlogic.mime.xml`, metainfo |
 | Web app dir `apps/gridcraft-web` | `packaging/web/package.sh` |
-| App colour `#1f9d55` (ink `#147a40`), **proposed** | `assets/app-icon/README.md`, metainfo `<branding>` |
+| App colours: Aegean Logic ink `#0A2A3B`, sea `#12718C`, aqua `#2FC6C0`, marble `#F4F2EC` | `assets/app-icon/README.md`, metainfo `<branding>` |
 
 ## Prerequisites still owned by the app crates
 
@@ -271,12 +271,12 @@ the publisher.
 
 ## Icons
 
-`assets/app-icon/gridcraft.svg` is a **placeholder** (an original ledger-page drawing on
-GridLogic green) until the owner makes GridLogic's engraved creature portrait (craftrules
-`standards/icon-design.md`). `packaging/icons.sh` regenerates the 1024 px PNG, the macOS 512 px
-PNG, the `.icns` (iconutil), the `.ico` (`cargo xtask ico`) and the hicolor PNGs from it; it
-needs `resvg`. The outputs are committed, so packaging never needs those tools. Every file has a
-row in `ATTRIBUTION.md` (`cargo xtask assets`).
+`assets/app-icon/gridcraft.svg` is the GridLogic app icon ("Sheet trace", in the Aegean Logic
+palette), used from 48 px up; `gridcraft-small.svg` is its simplified glyph for 32 px and below.
+`packaging/icons.sh` regenerates the 1024 px PNG, the macOS 512 px PNG, the `.icns`
+(`cargo xtask icns`), the `.ico` (`cargo xtask ico`) and the hicolor PNGs from them; it needs
+`resvg` and runs on any platform. The outputs are committed, so packaging never needs those tools.
+Every file has a row in `ATTRIBUTION.md` (`cargo xtask assets`).
 
 ## Checks
 

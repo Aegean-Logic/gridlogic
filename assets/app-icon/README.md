@@ -1,32 +1,31 @@
-# GridCraft app icon (PLACEHOLDER)
+# GridLogic app icon
 
-**This icon is temporary.** Every Crafting App's icon is an engraved creature portrait that the
-product owner makes (craftrules `standards/icon-design.md`); GridCraft's hasn't been made yet.
-Until it is, this placeholder stands in: a simple ledger page with a header row, a row-number
-column, a selected cell with its fill handle and a double rule under a total, on a full-bleed
-GridCraft-green tile. It is original geometry written by hand for this repository, deliberately
-not modelled on any vendor's spreadsheet logo (no letters, no "X", no overlapping panels).
+**Sheet trace**: a spreadsheet page with an ink header row, a light grid and a sea trace that ends
+in the aqua node, on a marble tile. It is drawn from the Aegean Logic palette so GridLogic sits with
+the rest of the Aegean Office suite. It is original geometry written by hand for this repository,
+deliberately not modelled on any vendor's spreadsheet logo (no letters, no "X", no overlapping
+panels).
 
-When the owner's art arrives, replace `gridcraft.svg`, run `packaging/icons.sh`, update this
-README (provenance, creature) and the rows in `ATTRIBUTION.md`, and drop the word placeholder.
+Two masters:
+
+- `gridcraft.svg`: the full artwork, used from 48 px up.
+- `gridcraft-small.svg`: a simplified glyph for 32 px and below. It drops the grid lines, thickens
+  the frame and trace and enlarges the node, so the icon still reads at 16 px.
 
 ## Palette
 
-Exactly three colours:
-
 | Colour | Hex | Used for |
 |---|---|---|
-| Ink | `#0b0b0c` | Line work and contour |
-| Paper | `#efe9dc` | The page |
-| GridCraft green (app colour, **proposed**) | `#1f9d55` | The full-bleed field and the header cells |
-
-The app colour is a proposal pending the owner's approval: GridCraft green `#1f9d55`, with ink
-(darker) variant `#147a40` for text and accents on light backgrounds. It differs from
-DesignCraft's `#7bb51c`.
+| Ink | `#0A2A3B` | Sheet frame and header row |
+| Sea | `#12718C` | The trace |
+| Aqua | `#2FC6C0` | The node at the end of the trace (one per icon) |
+| Marble | `#F4F2EC` | The tile |
+| White | `#FFFFFF` | The sheet, and the ring around the node |
+| Grid | `#CED4D8` | Grid lines (full artwork only) |
 
 ## Geometry
 
-A 512 × 512 viewBox, clipped to a rounded square with `rx=112`. Windows and Linux use the full
+A 512 × 512 viewBox; the tile is a rounded square with `rx=112`. Windows and Linux use the full
 tile. The macOS icons (`.icns`, `gridcraft-macos-512.png`) sit on Apple's grid: an 824/1024
 body with a transparent margin.
 
@@ -34,11 +33,12 @@ body with a transparent margin.
 
 | File | Use |
 |---|---|
-| `gridcraft.svg` | Canonical artwork; also `hicolor/scalable` |
+| `gridcraft.svg` | Canonical artwork (48 px and up); also `hicolor/scalable` |
+| `gridcraft-small.svg` | Small-size glyph (32 px and below) |
 | `gridcraft-1024.png` | 1024 px render of the full tile |
 | `gridcraft-macos-512.png` | Runtime Dock icon on macOS (for `apps/gridcraft` to embed) |
-| `gridcraft.icns` | macOS bundle icon (`CFBundleIconFile`) |
-| `gridcraft.ico` | Windows exe icon, 16–256 px (embedded by `apps/gridcraft/build.rs`) |
+| `gridcraft.icns` | macOS bundle icon (`CFBundleIconFile`), 16–1024 px |
+| `gridcraft.ico` | Windows exe icon and web favicon, 16–256 px (embedded by `apps/gridcraft/build.rs`) |
 | `hicolor/<size>/apps/uk.co.aegeanlogic.gridlogic.png` | Linux icon theme, 16–512 px; the 256 px one is also the runtime window icon on Windows and Linux |
 | `hicolor/scalable/apps/uk.co.aegeanlogic.gridlogic.svg` | Linux scalable icon |
 | `LICENSE.txt` | MIT OR Apache-2.0 |
@@ -48,5 +48,6 @@ ID and `packaging/linux/uk.co.aegeanlogic.gridlogic.desktop`.
 
 ## Regenerate
 
-Edit `gridcraft.svg`, then run `packaging/icons.sh`. It needs `resvg`, and `iconutil` for the
-`.icns` (macOS only). It packs the `.ico` with `cargo xtask ico`.
+Edit `gridcraft.svg` or `gridcraft-small.svg`, then run `packaging/icons.sh`. It needs `resvg`
+(`cargo install resvg`) and runs on any platform: it packs the `.ico` with `cargo xtask ico` and
+the `.icns` with `cargo xtask icns`.

@@ -1,9 +1,9 @@
-GridCraft app icon (gridcraft.svg and every file derived from it in this directory:
-gridcraft-1024.png, gridcraft-macos-512.png, gridcraft.icns, gridcraft.ico, hicolor/).
+GridLogic app icon (gridcraft.svg, gridcraft-small.svg and every file derived from them in this
+directory: gridcraft-1024.png, gridcraft-macos-512.png, gridcraft.icns, gridcraft.ico, hicolor/).
 
-PLACEHOLDER artwork: original work written for this project by GridCraft contributors (simple
-hand-written SVG geometry). No third-party material. Licensed like the rest of GridCraft, under
-either of
+Original work written for this project by GridLogic contributors (hand-written SVG geometry in the
+Aegean Logic colour palette; it contains no Aegean Logic logo artwork). No third-party material.
+Licensed like the rest of GridCraft, under either of
 
   * Apache License, Version 2.0 (https://www.apache.org/licenses/LICENSE-2.0)
   * MIT license (https://opensource.org/licenses/MIT)

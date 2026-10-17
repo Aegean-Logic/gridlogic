@@ -39,10 +39,10 @@
     <keyword>xlsx</keyword>
     <keyword>csv</keyword>
   </keywords>
-  <!-- Proposed app colour (GridLogic green #1f9d55 / ink #147a40); see assets/app-icon/README.md. -->
+  <!-- App colours from the Aegean Logic palette (sea-200 / ink); see assets/app-icon/README.md. -->
   <branding>
-    <color type="primary" scheme_preference="light">#a7e3bf</color>
-    <color type="primary" scheme_preference="dark">#147a40</color>
+    <color type="primary" scheme_preference="light">#C4DCE2</color>
+    <color type="primary" scheme_preference="dark">#0A2A3B</color>
   </branding>
   <requires>
     <display_length compare="ge">760</display_length>
