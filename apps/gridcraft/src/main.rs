@@ -1,6 +1,9 @@
 //! GridCraft desktop app.
 //!
-//! Usage: `gridcraft [--control <port>] [--sample <name>] [files…]`
+//! Usage: `gridcraft [--control <port>] [--sample <name>] [--new-instance] [files… | gridlogic://…]`
+//!
+//! On Windows and Linux, files and `gridlogic://` links open in the GridLogic already running
+//! (`single_instance`); `--new-instance` starts another window anyway.
 //!
 //! `--control <port>` (or `GRIDCRAFT_CONTROL_PORT`) starts a localhost JSON-lines control
 //! server: `{"id":1,"method":"ui.inspect","params":{}}` → `{"id":1,"ok":true,"result":…}`.
@@ -18,6 +21,7 @@ mod logging;
 mod native_menu;
 mod nextcloud;
 mod print;
+mod single_instance;
 
 use std::cell::RefCell;
 use std::rc::Rc;
@@ -29,22 +33,49 @@ use serde_json::json;
 struct App(
     SheetApp,
     nextcloud::Nextcloud,
+    /// This is the GridLogic running: later launches hand it their files (`single_instance`).
+    Option<single_instance::Primary>,
     #[cfg(target_os = "macos")] Option<native_menu::NativeMenu>,
     #[cfg(target_os = "macos")] fmv_macos_events::Inbox,
 );
+
+impl App {
+    /// Files and links a later launch handed over: opened here, and this window comes forward.
+    fn take_handed_over(&mut self, ctx: &egui::Context) {
+        let asked = self.2.as_ref().map(single_instance::Primary::take).unwrap_or_default();
+        for args in asked {
+            if args.is_empty() {
+                // Started again with nothing to open: a new workbook, as Excel does.
+                self.0.run_or_alert("file.new", json!({}));
+            }
+            for arg in args {
+                if arg.starts_with("gridlogic:") {
+                    if !self.1.open_link(&arg) {
+                        log::warn!("not a GridLogic link: {arg}");
+                    }
+                } else {
+                    self.0.open_path(&arg);
+                }
+            }
+            ctx.send_viewport_cmd(egui::ViewportCommand::Minimized(false));
+            ctx.send_viewport_cmd(egui::ViewportCommand::Focus);
+        }
+    }
+}
 
 impl eframe::App for App {
     fn logic(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
         #[cfg(target_os = "macos")]
         {
-            if self.2.is_none() && std::env::var_os("GRIDCRAFT_NO_NATIVE_MENU").is_none() {
-                self.2 = Some(native_menu::NativeMenu::install(ctx));
+            if self.3.is_none() && std::env::var_os("GRIDCRAFT_NO_NATIVE_MENU").is_none() {
+                self.3 = Some(native_menu::NativeMenu::install(ctx));
             }
-            if let Some(m) = &self.2 {
+            if let Some(m) = &self.3 {
                 m.poll(&mut self.0, ctx);
             }
-            apple_events::poll(&self.3, &mut self.0, ctx);
+            apple_events::poll(&self.4, &mut self.0, ctx);
         }
+        self.take_handed_over(ctx);
         self.0.logic(ctx);
         self.1.poll(&mut self.0, ctx);
         self.0.poll_printing(ctx);
@@ -297,12 +328,30 @@ fn main() -> eframe::Result<()> {
                 sample = Some(args.get(i).cloned().unwrap_or_else(|| "sales".into()));
             }
             a if a.starts_with("-psn_") => {}
+            // A window of its own, even with GridLogic running (`single_instance`).
+            "--new-instance" => {}
             // "Open in Desktop App" in the browser: a Nextcloud file (`nextcloud.rs`).
             a if a.starts_with("gridlogic:") => links.push(a.to_string()),
             a => files.push(a.to_string()),
         }
         i += 1;
     }
+    // GridLogic running already (Windows, Linux): it opens these files and links, and this
+    // launch ends here, before touching the log files. Runs for agents and tests (a control
+    // port, a sample, no preferences) and `--new-instance` always get their own window.
+    let single =
+        !cfg!(target_os = "macos") && prefs_enabled() && control_port.is_none() && sample.is_none() && !args.iter().any(|a| a == "--new-instance");
+    let instance = match config_dir().filter(|_| single) {
+        Some(dir) => {
+            let mut handed: Vec<String> = files.iter().map(|f| single_instance::absolute(f)).collect();
+            handed.extend(links.iter().cloned());
+            match single_instance::claim(&dir, &handed) {
+                single_instance::Claim::Forwarded => return Ok(()),
+                single_instance::Claim::Primary(p) => p,
+            }
+        }
+        None => None,
+    };
     // The log file lives in the settings folder, next to the preferences; opened after the
     // arguments, so `--version` leaves no file behind. Records logged until now are written to it
     // first. Runs without preferences (agents' test runs) log to standard error only, so they
@@ -381,13 +430,13 @@ fn main() -> eframe::Result<()> {
     let apple_events = &apple_events;
     // The app waits here until a start gets as far as creating it; a start that fails before
     // (no graphics adapter, device or surface) leaves it here for the next attempt.
-    let pending = std::cell::Cell::new(Some((app, nextcloud)));
+    let pending = std::cell::Cell::new(Some((app, nextcloud, instance)));
     let run = |options: eframe::NativeOptions| {
         eframe::run_native(
             "GridLogic",
             options,
             Box::new(|cc| {
-                let Some((mut app, nextcloud)) = pending.take() else {
+                let Some((mut app, nextcloud, instance)) = pending.take() else {
                     return Err("the app was already created".into());
                 };
                 SheetApp::setup_context_for_language(&cc.egui_ctx, app.ui.dark, app.ui.language);
@@ -397,9 +446,13 @@ fn main() -> eframe::Result<()> {
                         Err(e) => log::error!("control channel on port {port}: {e}"),
                     }
                 }
+                if let Some(p) = &instance {
+                    p.attach(&cc.egui_ctx);
+                }
                 Ok(Box::new(App(
                     app,
                     nextcloud,
+                    instance,
                     #[cfg(target_os = "macos")]
                     None,
                     #[cfg(target_os = "macos")]
