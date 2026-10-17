@@ -1,5 +1,8 @@
 //! The browser shell: web `Services`, drag-and-drop, and the eframe web runner.
 
+use std::cell::RefCell;
+use std::rc::Rc;
+
 use gridcraft_engine::Session;
 use gridcraft_ui_egui::{Inbox, Services, SheetApp};
 use wasm_bindgen::JsCast as _;
@@ -69,6 +72,10 @@ pub fn start() {
                         }
                         bridge.post_ready();
                     }
+                    let app = Rc::new(RefCell::new(app));
+                    if let Some(bridge) = &app_bridge {
+                        bridge.attach(&app, inbox.clone());
+                    }
                     Ok(Box::new(WebShell { app, inbox, bridge: app_bridge }))
                 }),
             )
@@ -94,7 +101,9 @@ fn query_param(key: &str) -> Option<String> {
 }
 
 struct WebShell {
-    app: SheetApp,
+    /// Shared with the host bridge, which handles co-editing messages as they arrive: a hidden
+    /// tab draws no frames, but the others' edits and save requests still have to be handled.
+    app: Rc<RefCell<SheetApp>>,
     inbox: Inbox,
     bridge: Option<crate::host::Bridge>,
 }
@@ -116,17 +125,18 @@ impl eframe::App for WebShell {
                 }
             });
         }
-        self.app.logic(ctx);
+        self.app.borrow_mut().logic(ctx);
     }
 
     fn raw_input_hook(&mut self, _ctx: &egui::Context, raw: &mut egui::RawInput) {
-        self.app.raw_input_hook(raw);
+        self.app.borrow_mut().raw_input_hook(raw);
     }
 
     fn ui(&mut self, ui: &mut egui::Ui, _frame: &mut eframe::Frame) {
-        self.app.ui(ui);
+        let mut app = self.app.borrow_mut();
+        app.ui(ui);
         if let Some(bridge) = &self.bridge {
-            bridge.sync(&mut self.app);
+            bridge.sync(&mut app);
         }
     }
 }

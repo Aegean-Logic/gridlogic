@@ -1,14 +1,29 @@
 # Real-time co-editing: design
 
-Status: phases 1 (engine) and 2 (transport through Nextcloud) done, 2026-10-17. Fork-specific
-(Aegean Office). Not upstream behaviour.
+Status: phases 1 (engine), 2 (transport through Nextcloud) and 3 (presence, collaborative
+undo) done, 2026-10-17. Fork-specific (Aegean Office). Not upstream behaviour. Phase 4
+(hardening) is next.
 
 ## Where it stands
 
-Two browsers on one file in Nextcloud co-edit live: typing, formatting and row inserts appear in
-the other within about a second, and the shared workbook is saved back to the file every 20
-edits or 30 seconds (and on Save). Phase 3 (others' selections on the grid, collaborative undo)
-is next.
+Everyone with a file open in Nextcloud edits it live:
+- **Edits:** typing, formatting and row inserts appear for the others within about a second.
+- **Presence:** each person's selection shows on the grid in their colour with their name, and
+  a strip above the editor lists who's editing.
+- **Undo and Redo** take back a person's own edits only, never someone else's later change.
+- **Saving:** the shared workbook is saved back to the file every 20 edits or 30 seconds, and on
+  Save, even when the saving member's tab is in the background.
+
+Phase 3 pieces:
+- **Collaborative undo.** In `collab::Replica`, each local edit's inverse is computed with
+  `capture` over the inverted structural edits. It is rebased over later remote ops (theirs win
+  conflicts) and over later own ops, and undoing sends it like any edit. The command enablers
+  `can_undo`/`can_redo` follow the shared stack.
+- **Presence.** `SheetApp::presence` (`ui-egui`), painted under the own selection by
+  `grid::paint_presence`. Positions travel `app → page → server (members.selection) → others`
+  with each poll; colours are assigned by the page per client id.
+- **Background tabs.** The web shell shares the app with the host bridge, which handles
+  co-editing messages as they arrive. Hidden tabs keep up and answer checkpoint requests.
 
 Phase 2 pieces:
 - **Session hook.** `Session::collab_*` (`crates/engine/src/collab/mod.rs`): every command path
@@ -45,7 +60,7 @@ Decisions made while building it:
   knew, and sheets added meanwhile keep their place after them.
 - **Sheets made in a shared session get ids namespaced by client** (`client << 32 | n`), so two
   people adding a sheet at once can't collide.
-- **Undo is refused in a shared session** until phase 3's collaborative undo.
+- **Undo in a shared session is each person's own** (phase 3): snapshot undo would take back others' edits.
 - **A copy missing log history must rejoin** rather than guess: placing an op without the
   entries its author hadn't seen would diverge. The server must give a joining copy the log
   from its checkpoint on.
@@ -140,8 +155,8 @@ shared session:
   before-values of the cells you changed. It is transformed through everything since and sent
   as a new op. Redo works the same way.
 - For a structural edit the inverse is the opposite edit (insert ↔ delete) plus a patch that
-  restores deleted cells. The prototype allows structural undo only when nobody else has edited
-  since; otherwise it says "Can't undo: others have edited since."
+  restores deleted cells. It's rebased like any other step, so undoing a row insert after
+  someone typed below it moves their text back up with its row (`collab_scenarios.rs`).
 - Single-user sessions keep today's snapshot undo unchanged.
 
 ## 5. Where the code goes

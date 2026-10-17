@@ -96,11 +96,14 @@ pub fn has_doc(s: &Session) -> std::result::Result<(), String> {
 }
 pub fn can_undo(s: &Session) -> std::result::Result<(), String> {
     has_doc(s)?;
-    if s.active().is_some_and(|d| !d.undo.is_empty()) { Ok(()) } else { Err("nothing to undo".into()) }
+    // In a shared workbook, undo is of this person's own edits.
+    let any = s.collab_can_undo(false).unwrap_or_else(|| s.active().is_some_and(|d| !d.undo.is_empty()));
+    if any { Ok(()) } else { Err("nothing to undo".into()) }
 }
 pub fn can_redo(s: &Session) -> std::result::Result<(), String> {
     has_doc(s)?;
-    if s.active().is_some_and(|d| !d.redo.is_empty()) { Ok(()) } else { Err("nothing to redo".into()) }
+    let any = s.collab_can_undo(true).unwrap_or_else(|| s.active().is_some_and(|d| !d.redo.is_empty()));
+    if any { Ok(()) } else { Err("nothing to redo".into()) }
 }
 pub fn has_clipboard(s: &Session) -> std::result::Result<(), String> {
     has_doc(s)?;

@@ -42,6 +42,17 @@ use serde::{Deserialize, Serialize};
 use serde_json::{Value as Json, json};
 
 pub use control::{ControlRequest, ControlResponse};
+
+/// Someone else in a shared workbook: their selection, drawn in their colour with their name.
+#[derive(Clone, Debug, PartialEq)]
+pub struct Presence {
+    pub name: String,
+    pub color: egui::Color32,
+    /// The sheet they're on ([`gridcraft_engine::model::Sheet::id`]).
+    pub sheet: u64,
+    pub active: CellRef,
+    pub ranges: Vec<RangeRef>,
+}
 pub mod desktop_theme;
 
 /// Persisted UI preferences.
@@ -219,6 +230,8 @@ pub struct SheetApp {
     /// The File tab's Backstage view, when open (UI-only; replaces the ribbon, grid and tabs).
     pub backstage: Option<backstage::Backstage>,
     pub message: Option<(String, String)>,
+    /// Other people in a shared workbook and where they are (set by the host; drawn on the grid).
+    pub presence: Vec<Presence>,
     pub toast: Option<(String, f64)>,
     /// Dismissible info bar under the ribbon (open-time notices).
     pub notice: Option<Notice>,
@@ -276,6 +289,7 @@ impl SheetApp {
             dialog: None,
             backstage: None,
             message: None,
+            presence: Vec::new(),
             toast: None,
             notice: None,
             services,

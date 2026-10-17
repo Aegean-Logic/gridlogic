@@ -112,6 +112,8 @@ merging; the page connects it to a server that orders everyone's edits into one 
 | `gridcraft:collab:op` | to the page | `json`: this person's next edit for the server, `{client, client_seq, base, op}`. The next comes once this one is back in the log, so send them in order and retry a failed one (the server must recognise a repeated `client`/`client_seq`). |
 | `gridcraft:collab:checkpoint` | from the page | `id`: asks for the shared workbook to save to the file. |
 | `gridcraft:collab:checkpointData` | to the page | `id`, `seq`, `name`, `bytes` (.xlsx): the workbook as everyone has it at log position `seq`, without this person's unconfirmed edits. |
+| `gridcraft:collab:selection` | to the page | `json`: this person's position, `{sheet, active, ranges}` (sheet id, cell, ranges), whenever it changes. |
+| `gridcraft:collab:presence` | from the page | `json`: where the others are, `[{name, color: "#rrggbb", sheet, active, ranges}]`; drawn on the grid in their colour with their name. |
 | `gridcraft:collab:stop` | from the page | Ends sharing. |
 | `gridcraft:collab:error` | to the page | `error`: this copy can't follow the log (an entry missing or out of order). Rejoin: load the file again and start over. |
 
@@ -121,7 +123,9 @@ The server's side of the contract:
 - A joiner that loaded the file before a newer save has to load it again.
 - Entries older than the oldest `base` anyone may still send must be kept.
 
-Undo is refused while sharing.
+While sharing, Undo and Redo work on this person's own edits only, and never take back a later
+change of someone else's. GridLogic handles co-editing messages as they arrive, even in a hidden
+tab, which draws no frames.
 
 ```js
 const frame = document.querySelector("iframe"); // src="/gridcraft/?host=parent&ack=1"

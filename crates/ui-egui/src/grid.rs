@@ -1596,6 +1596,32 @@ pub(crate) fn outline_bands(rect: Rect, width: f32, clip: Rect) -> Vec<Rect> {
 
 /// `outline` is where the current area's border is drawn this frame (see `selection_glide`).
 #[allow(clippy::too_many_arguments)]
+/// Others in a shared workbook on this sheet: their selection tinted and outlined in their colour,
+/// their active cell boxed, and their name on a tag beside it. Drawn under this person's own.
+fn paint_presence(p: &Painter, geo: &Geo, sh: &Sheet, app: &SheetApp, rows: (u32, u32), cols: (u32, u32)) {
+    for who in app.presence.iter().filter(|w| w.sheet == sh.id) {
+        for r in who.ranges.iter().filter(|r| range_in_pane(**r, rows, cols)) {
+            let rr = geo.range_rect(sh, *r);
+            p.rect_filled(rr, 0.0, who.color.gamma_multiply(0.10));
+            p.rect_stroke(rr, 0.0, Stroke::new(1.0, who.color), StrokeKind::Inside);
+        }
+        let active = sh.merge_at(who.active).unwrap_or_else(|| RangeRef::cell(who.active));
+        if !range_in_pane(active, rows, cols) {
+            continue;
+        }
+        let cell = geo.range_rect(sh, active);
+        p.rect_stroke(cell, 0.0, Stroke::new(2.0, who.color), StrokeKind::Inside);
+        let galley = p.layout_no_wrap(who.name.clone(), egui::FontId::proportional(11.0), Color32::WHITE);
+        let size = galley.size() + vec2(8.0, 2.0);
+        // Above the cell, or inside its bottom edge when that would leave the pane.
+        let top = cell.top() - size.y;
+        let min = if top >= p.clip_rect().top() { egui::pos2(cell.left(), top) } else { egui::pos2(cell.left(), cell.bottom()) };
+        let tag = Rect::from_min_size(min, size);
+        p.rect_filled(tag, 2.0, who.color);
+        p.galley(tag.min + vec2(4.0, 1.0), galley, Color32::WHITE);
+    }
+}
+
 pub(crate) fn paint_selection(
     p: &Painter,
     geo: &Geo,
@@ -1607,6 +1633,7 @@ pub(crate) fn paint_selection(
     rows: (u32, u32),
     cols: (u32, u32),
 ) {
+    paint_presence(p, geo, sh, app, rows, cols);
     // Fill all areas except the active cell.
     for rect in selection_fill_where(geo, sh, sel, outline, |r| range_in_pane(*r, rows, cols)) {
         p.rect_filled(rect, 0.0, t.sel_fill);

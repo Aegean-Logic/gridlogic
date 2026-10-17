@@ -168,6 +168,29 @@ impl Session {
         self.collab.as_ref().map(|c| (c.replica.seq(), c.replica.confirmed().clone()))
     }
 
+    /// Undo (or redo) in a shared document: this person's own last edit, for everyone. Their
+    /// edits since stay.
+    pub(crate) fn collab_undo(&mut self, redo: bool) -> Result<serde_json::Value> {
+        let Some(mut shared) = self.collab.take() else { return Ok(serde_json::Value::Null) };
+        let r = match self.docs.iter_mut().find(|d| d.uid == shared.uid) {
+            Some(d) => shared.replica.undo(d, redo),
+            None => Ok(false),
+        };
+        self.collab = Some(shared);
+        let what = if redo { "redo" } else { "undo" };
+        match r? {
+            true => Ok(serde_json::Value::Null),
+            false => Err(EngineError::Other(format!("Nothing of yours to {what}."))),
+        }
+    }
+
+    /// Whether this person has something to undo (or redo) in the shared document; `None` when
+    /// the active document isn't shared.
+    pub fn collab_can_undo(&self, redo: bool) -> Option<bool> {
+        let active = self.active().map(|d| d.uid);
+        self.collab.as_ref().filter(|c| Some(c.uid) == active).map(|c| c.replica.can_undo(redo))
+    }
+
     /// After a command on the shared document: its op goes to the others. If it can't be put into
     /// an op, the edit is taken back rather than left on this screen only.
     pub(crate) fn share_edit(&mut self, uid: u64, before: &Arc<Workbook>) -> Result<()> {
@@ -178,7 +201,7 @@ impl Session {
                 match capture(before, &d.wb, edits) {
                     Ok(op) => {
                         if !op.is_empty() {
-                            shared.replica.local(d, op);
+                            shared.replica.local(d, before, op);
                         }
                         Ok(())
                     }

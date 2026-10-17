@@ -3,9 +3,15 @@
 //! `packaging/web/README.md`.
 
 use gridcraft_engine::collab::Incoming;
+use gridcraft_engine::core::{CellRef, RangeRef};
+use serde::{Deserialize, Serialize};
 
 /// The largest log batch taken in one message (JSON text).
 pub const MAX_JSON_BYTES: usize = 64 << 20;
+/// The most people drawn on the grid, ranges per person, and characters of a name.
+const MAX_PEOPLE: usize = 64;
+const MAX_RANGES: usize = 64;
+const MAX_NAME_CHARS: usize = 60;
 /// The largest integer a JavaScript number holds exactly.
 const MAX_SAFE_INTEGER: f64 = 9_007_199_254_740_991.0;
 
@@ -21,6 +27,46 @@ pub enum FromPage {
     Checkpoint { id: u64 },
     /// `gridcraft:collab:stop`: the session ended.
     Stop,
+    /// `gridcraft:collab:presence {json}`: where the others are.
+    Presence(Vec<Someone>),
+}
+
+/// Someone else in the session, as the page reports them.
+#[derive(Clone, Debug, PartialEq, Deserialize)]
+pub struct Someone {
+    pub name: String,
+    /// `#rrggbb`.
+    pub color: String,
+    pub sheet: u64,
+    pub active: CellRef,
+    #[serde(default)]
+    pub ranges: Vec<RangeRef>,
+}
+
+impl Someone {
+    /// The colour as RGB (grey if it isn't `#rrggbb`).
+    pub fn rgb(&self) -> [u8; 3] {
+        let hex = self.color.strip_prefix('#').unwrap_or("");
+        let byte = |i: usize| hex.get(i..i + 2).and_then(|h| u8::from_str_radix(h, 16).ok());
+        match (hex.len(), byte(0), byte(2), byte(4)) {
+            (6, Some(r), Some(g), Some(b)) => [r, g, b],
+            _ => [128, 128, 128],
+        }
+    }
+}
+
+/// This person's position, for the others (`gridcraft:collab:selection {json}`).
+#[derive(Clone, Debug, PartialEq, Serialize)]
+pub struct Position {
+    pub sheet: u64,
+    pub active: CellRef,
+    pub ranges: Vec<RangeRef>,
+}
+
+impl Position {
+    pub fn new(sheet: u64, active: CellRef, ranges: &[RangeRef]) -> Position {
+        Position { sheet, active, ranges: ranges.iter().take(MAX_RANGES).copied().collect() }
+    }
 }
 
 /// The co-editing message in a page message of type `kind`, if it is one. `Err` for one that's
@@ -36,6 +82,24 @@ pub fn parse(kind: &str, client: Option<f64>, seq: Option<f64>, json: Option<&st
         },
         "gridcraft:collab:checkpoint" => need(id, "id").map(|id| FromPage::Checkpoint { id }),
         "gridcraft:collab:stop" => Ok(FromPage::Stop),
+        "gridcraft:collab:presence" => match json {
+            Some(text) if text.len() <= MAX_JSON_BYTES => serde_json::from_str::<Vec<Someone>>(text)
+                .map(|people| {
+                    FromPage::Presence(
+                        people
+                            .into_iter()
+                            .take(MAX_PEOPLE)
+                            .map(|mut s| {
+                                s.name = s.name.chars().take(MAX_NAME_CHARS).collect();
+                                s.ranges.truncate(MAX_RANGES);
+                                s
+                            })
+                            .collect(),
+                    )
+                })
+                .map_err(|e| format!("{kind}: {e}")),
+            _ => Err(format!("{kind}: `json` is missing or too large")),
+        },
         _ => return None,
     })
 }
@@ -86,6 +150,26 @@ mod tests {
             other => panic!("{other:?}"),
         }
         assert!(matches!(parse("gridcraft:collab:entries", None, None, Some(r#"[{"client":2}]"#), None), Some(Err(_))), "no seq");
+
+        // Where the others are: names capped, colours checked.
+        let long = "x".repeat(500);
+        let people = format!(
+            r##"[{{"name":"{long}","color":"#12718C","sheet":3,"active":{{"row":4,"col":1}},"ranges":[{{"start":{{"row":4,"col":1}},"end":{{"row":6,"col":2}}}}]}},
+               {{"name":"Ben","color":"blue","sheet":3,"active":{{"row":0,"col":0}}}}]"##
+        );
+        match parse("gridcraft:collab:presence", None, None, Some(&people), None) {
+            Some(Ok(FromPage::Presence(p))) => {
+                assert_eq!(p.len(), 2);
+                assert_eq!(p[0].name.chars().count(), MAX_NAME_CHARS);
+                assert_eq!(p[0].rgb(), [0x12, 0x71, 0x8C]);
+                assert_eq!(p[0].ranges.len(), 1);
+                assert_eq!(p[1].rgb(), [128, 128, 128], "not #rrggbb: grey");
+            }
+            other => panic!("{other:?}"),
+        }
+        assert!(matches!(parse("gridcraft:collab:presence", None, None, Some("{}"), None), Some(Err(_))));
+        let many: Vec<RangeRef> = (0..500).map(|i| RangeRef::cell(CellRef::new(i, 0))).collect();
+        assert_eq!(Position::new(1, CellRef::new(0, 0), &many).ranges.len(), MAX_RANGES);
         assert!(matches!(parse("gridcraft:collab:entries", None, None, None, None), Some(Err(_))));
     }
 }

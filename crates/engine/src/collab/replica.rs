@@ -9,6 +9,11 @@
 //! entries `base+1 .. n-1` (its author hadn't seen them) before it's applied. That's a pure
 //! function of the log, so every copy, the author's included, applies the same thing and ends
 //! with the same workbook. An op the rebase or the apply refuses becomes a no-op everywhere.
+//!
+//! Undo is each person's own: an edit's inverse (its inserts as deletes and so on, and a patch
+//! putting back what it changed) goes on their undo stack, is rebased over everything that
+//! arrives afterwards (where someone else changed the same thing later, their change stays), and
+//! undoing sends it to everyone like any other edit.
 
 use std::collections::VecDeque;
 use std::sync::Arc;
@@ -18,12 +23,22 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value as Json;
 
 use super::transform::rebase;
-use super::{Op, apply_patch, replay, run_captured};
+use super::{Op, StructEdit, apply_patch, capture, replay, run_captured};
 use crate::{DocState, EngineError, Result, Session};
 
 /// Log entries kept for rebasing late ops. An op made against an older position can't be
 /// placed; its author has to rejoin from a fresh copy.
 const LOG_KEEP: usize = 4096;
+/// Undo steps kept, as without co-editing.
+const UNDO_KEEP: usize = 100;
+
+/// What a local op is, for the undo and redo stacks.
+#[derive(Clone, Copy, PartialEq)]
+enum Kind {
+    Edit,
+    Undo,
+    Redo,
+}
 
 /// An op on its way to the server.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
@@ -67,6 +82,9 @@ pub struct Replica {
     buffer: VecDeque<Pending>,
     next_client_seq: u64,
     next_sheet: u64,
+    /// This person's undo and redo steps (inverse ops), rebased to apply to what they see now.
+    undo: Vec<Op>,
+    redo: Vec<Op>,
 }
 
 impl Replica {
@@ -76,7 +94,18 @@ impl Replica {
         if client == 0 || client > u64::from(u32::MAX) {
             return Err(EngineError::Other("co-editing: the client id must be between 1 and 2^32-1".into()));
         }
-        Ok(Replica { client, confirmed: wb, seq, log: VecDeque::new(), inflight: None, buffer: VecDeque::new(), next_client_seq: 1, next_sheet: 1 })
+        Ok(Replica {
+            client,
+            confirmed: wb,
+            seq,
+            log: VecDeque::new(),
+            inflight: None,
+            buffer: VecDeque::new(),
+            next_client_seq: 1,
+            next_sheet: 1,
+            undo: Vec::new(),
+            redo: Vec::new(),
+        })
     }
 
     pub fn client(&self) -> u64 {
@@ -98,22 +127,69 @@ impl Replica {
         self.inflight.is_some() || !self.buffer.is_empty()
     }
 
-    /// Runs a command for this person: on their copy at once, and queued for the others.
+    /// Runs a command for this person: on their copy at once, and queued for the others. Undo
+    /// and redo take back this person's own edits only.
     pub fn run(&mut self, s: &mut Session, id: &str, params: Json) -> Result<Json> {
         if matches!(id, "edit.undo" | "edit.redo") {
-            // Snapshot undo would take back other people's edits too (docs/co-editing.md §4).
-            return Err(EngineError::Other("Undo isn't available in a shared workbook yet.".into()));
+            let redo = id == "edit.redo";
+            return match self.undo(s.doc_mut()?, redo)? {
+                true => Ok(Json::Null),
+                false => Err(EngineError::Other(format!("Nothing of yours to {}.", if redo { "redo" } else { "undo" }))),
+            };
         }
+        let before = s.doc()?.wb.clone();
         let (out, op) = run_captured(s, id, params)?;
         if !op.is_empty() {
-            self.local(s.doc_mut()?, op);
+            self.local(s.doc_mut()?, &before, op);
         }
         Ok(out)
     }
 
-    /// Queues `op`, an edit this person just made in `d`, for the others.
-    pub fn local(&mut self, d: &mut DocState, mut op: Op) {
+    /// Queues `op`, an edit this person just made in `d` (which was `before`), for the others,
+    /// and puts its inverse on the undo stack.
+    pub fn local(&mut self, d: &mut DocState, before: &Workbook, mut op: Op) {
         self.retag_new_sheets(d, &mut op);
+        self.queue(d, before, op, Kind::Edit);
+    }
+
+    /// Undoes (or with `redo`, redoes) this person's last edit: on their copy at once, and for
+    /// the others. Their edits made since stay. False when there's nothing to undo.
+    pub fn undo(&mut self, d: &mut DocState, redo: bool) -> Result<bool> {
+        let stack = if redo { &mut self.redo } else { &mut self.undo };
+        let Some(op) = stack.pop() else { return Ok(false) };
+        let before = d.wb.clone();
+        let mut wb = (*before).clone();
+        apply_wb(&mut wb, &op)?;
+        d.calc.recalc_all(&mut wb);
+        d.wb = Arc::new(wb);
+        d.revision += 1;
+        self.queue(d, &before, op, if redo { Kind::Redo } else { Kind::Undo });
+        Ok(true)
+    }
+
+    /// Whether there's something of this person's to undo (or redo).
+    pub fn can_undo(&self, redo: bool) -> bool {
+        if redo { !self.redo.is_empty() } else { !self.undo.is_empty() }
+    }
+
+    fn queue(&mut self, d: &DocState, before: &Workbook, op: Op, kind: Kind) {
+        // The steps already stacked now apply after this op (this person's own: theirs stands).
+        for step in self.undo.iter_mut().chain(self.redo.iter_mut()) {
+            if let Ok(s) = rebase(step, &op, true, before) {
+                *step = s;
+            }
+        }
+        // Its inverse: undoing an undo is redoing it, and the other way round.
+        if let Ok(inverse) = capture(&d.wb, before, inverse_edits(&op.edits)) {
+            let stack = if kind == Kind::Undo { &mut self.redo } else { &mut self.undo };
+            stack.push(inverse);
+            if stack.len() > UNDO_KEEP {
+                stack.remove(0);
+            }
+        }
+        if kind == Kind::Edit {
+            self.redo.clear();
+        }
         let client_seq = self.next_client_seq;
         self.next_client_seq += 1;
         self.buffer.push_back(Pending { client_seq, base: 0, original: op.clone(), current: op });
@@ -173,6 +249,12 @@ impl Replica {
                 }
                 if let Ok(past) = rebase(&theirs, &mine, false, &before) {
                     theirs = past;
+                }
+            }
+            // Undo steps now go after it, and where it changed the same thing, it stays.
+            for step in self.undo.iter_mut().chain(self.redo.iter_mut()) {
+                if let Ok(s) = rebase(step, &theirs, false, &before) {
+                    *step = s;
                 }
             }
         }
@@ -239,6 +321,22 @@ impl Replica {
             }
         }
     }
+}
+
+/// The structural edits that take back `edits`, last first. A move has none (its patch carries
+/// the cells back).
+fn inverse_edits(edits: &[StructEdit]) -> Vec<StructEdit> {
+    edits
+        .iter()
+        .rev()
+        .filter_map(|e| match *e {
+            StructEdit::Insert { sheet, dir, at, count } => Some(StructEdit::Delete { sheet, dir, at, count }),
+            StructEdit::Delete { sheet, dir, at, count } => Some(StructEdit::Insert { sheet, dir, at, count }),
+            StructEdit::InsertCells { sheet, dir, range } => Some(StructEdit::DeleteCells { sheet, dir, range }),
+            StructEdit::DeleteCells { sheet, dir, range } => Some(StructEdit::InsertCells { sheet, dir, range }),
+            StructEdit::Move { .. } => None,
+        })
+        .collect()
 }
 
 /// Applies an op to a bare workbook (no recalculation): its structural edits, then its patch.

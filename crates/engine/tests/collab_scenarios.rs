@@ -131,11 +131,101 @@ fn two_people_adding_a_sheet_keep_both() {
     assert!(a.contains(&"Ana's".to_string()) && a.contains(&"Ben's".to_string()), "{a:?}");
 }
 
+/// Sends whatever either has to send and delivers the log to both, until nobody has anything
+/// left (a server with no delays).
+fn settle(ana: &mut Person, ben: &mut Person, log: &mut Vec<Incoming>) {
+    for _ in 0..50 {
+        for p in [&mut *ana, &mut *ben] {
+            if let Some(out) = p.replica.outgoing() {
+                log.push(Incoming { seq: log.len() as u64 + 1, client: out.client, client_seq: out.client_seq, base: out.base, op: out.op });
+            }
+        }
+        for p in [&mut *ana, &mut *ben] {
+            while (p.replica.seq() as usize) < log.len() {
+                let msg = log[p.replica.seq() as usize].clone();
+                let Ok(d) = p.session.doc_mut() else { panic!("no document") };
+                if let Err(e) = p.replica.receive(msg, d) {
+                    panic!("{e}");
+                }
+            }
+        }
+        if !ana.replica.has_pending() && !ben.replica.has_pending() {
+            return;
+        }
+    }
+    panic!("never settled");
+}
+
 #[test]
-fn undo_is_refused_in_a_shared_workbook() {
-    let (mut ana, _) = two(&[("A1", "1")]);
-    run(&mut ana, "cell.set", json!({"cell": "A1", "input": "2"}));
-    assert!(ana.replica.run(&mut ana.session, "edit.undo", json!({})).is_err(), "undo would take back other people's edits");
+fn undo_takes_back_only_my_own_edit() {
+    let (mut ana, mut ben) = two(&[]);
+    let mut log = Vec::new();
+    run(&mut ana, "cell.set", json!({"cell": "A1", "input": "Ana's"}));
+    run(&mut ben, "cell.set", json!({"cell": "B1", "input": "Ben's"}));
+    settle(&mut ana, &mut ben, &mut log);
+    run(&mut ana, "edit.undo", json!({}));
+    settle(&mut ana, &mut ben, &mut log);
+    assert_eq!(shown(&ana, &ben, "A1"), "", "Ana's edit is undone for both");
+    assert_eq!(shown(&ana, &ben, "B1"), "Ben's", "Ben's edit stays");
+}
+
+#[test]
+fn undo_keeps_a_later_change_by_someone_else() {
+    let (mut ana, mut ben) = two(&[]);
+    let mut log = Vec::new();
+    run(&mut ana, "cell.set", json!({"cell": "A1", "input": "Ana's"}));
+    settle(&mut ana, &mut ben, &mut log);
+    run(&mut ben, "cell.set", json!({"cell": "A1", "input": "Ben's correction"}));
+    settle(&mut ana, &mut ben, &mut log);
+    run(&mut ana, "edit.undo", json!({}));
+    settle(&mut ana, &mut ben, &mut log);
+    assert_eq!(shown(&ana, &ben, "A1"), "Ben's correction", "undo never removes someone else's later edit");
+}
+
+#[test]
+fn undoing_an_insert_keeps_what_others_typed() {
+    let (mut ana, mut ben) = two(&[("A10", "row ten")]);
+    let mut log = Vec::new();
+    run(&mut ana, "home.insertRows", json!({"rows": "3:4"}));
+    run(&mut ben, "cell.set", json!({"cell": "B10", "input": "Ben's note"}));
+    settle(&mut ana, &mut ben, &mut log);
+    assert_eq!(shown(&ana, &ben, "B12"), "Ben's note");
+    run(&mut ana, "edit.undo", json!({}));
+    settle(&mut ana, &mut ben, &mut log);
+    assert_eq!(shown(&ana, &ben, "A10"), "row ten", "the rows Ana inserted are gone again");
+    assert_eq!(shown(&ana, &ben, "B10"), "Ben's note", "Ben's note moved back up with its row");
+}
+
+#[test]
+fn undoing_a_delete_brings_the_rows_back() {
+    let (mut ana, mut ben) = two(&[("A5", "keep me"), ("A6", "below")]);
+    let mut log = Vec::new();
+    run(&mut ana, "home.deleteRows", json!({"rows": "5:5"}));
+    settle(&mut ana, &mut ben, &mut log);
+    assert_eq!(shown(&ana, &ben, "A5"), "below");
+    run(&mut ana, "edit.undo", json!({}));
+    settle(&mut ana, &mut ben, &mut log);
+    assert_eq!(shown(&ana, &ben, "A5"), "keep me");
+    assert_eq!(shown(&ana, &ben, "A6"), "below");
+}
+
+#[test]
+fn redo_puts_an_undone_edit_back() {
+    let (mut ana, mut ben) = two(&[("C3", "old")]);
+    let mut log = Vec::new();
+    run(&mut ana, "cell.set", json!({"cell": "C3", "input": "new"}));
+    run(&mut ana, "edit.undo", json!({}));
+    settle(&mut ana, &mut ben, &mut log);
+    assert_eq!(shown(&ana, &ben, "C3"), "old");
+    run(&mut ana, "edit.redo", json!({}));
+    settle(&mut ana, &mut ben, &mut log);
+    assert_eq!(shown(&ana, &ben, "C3"), "new");
+    // A fresh edit clears what could be redone.
+    run(&mut ana, "edit.undo", json!({}));
+    run(&mut ana, "cell.set", json!({"cell": "D3", "input": "x"}));
+    assert!(ana.replica.run(&mut ana.session, "edit.redo", json!({})).is_err(), "nothing to redo after a fresh edit");
+    // Ben has nothing of his own to undo.
+    assert!(ben.replica.run(&mut ben.session, "edit.undo", json!({})).is_err(), "Ana's edits aren't Ben's to undo");
 }
 
 /// Co-editing through the session itself: every command path (here `Session::run`, as the UI
@@ -170,7 +260,8 @@ fn a_shared_session_shares_every_edit() {
     if let Err(e) = ben.run("cell.set", json!({"cell": "D2", "input": "Ben was here"})) {
         panic!("{e}");
     }
-    assert!(ana.run("edit.undo", json!({})).is_err(), "undo is refused while shared");
+    // Ana's undo takes back her Subtotal (her last edit), not Ben's note.
+    assert!(ana.run("edit.undo", json!({})).is_ok());
     assert!(ben.run("selection.set", json!({"range": "B2"})).is_ok());
 
     // A server: sequence whatever's sent, deliver to both, until quiet.
@@ -194,11 +285,18 @@ fn a_shared_session_shares_every_edit() {
             break;
         }
     }
-    assert_eq!(log.len(), 3, "three edits, three ops (the subtotal's inner commands aren't sent separately)");
+    assert_eq!(log.len(), 4, "four edits, four ops (the subtotal's inner commands aren't sent separately)");
     let (Some((sa, a)), Some((sb, b))) = (ana.collab_confirmed(), ben.collab_confirmed()) else { panic!("not shared") };
     assert_eq!(sa, sb);
     let diff = gridcraft_engine::collab::make_patch(&a, &b).unwrap_or_else(|e| panic!("{e}"));
     assert!(diff.is_empty(), "{diff:?}");
     let shown = |s: &Session| s.active().map(|d| d.wb.clone()).unwrap_or_default();
     assert!(gridcraft_engine::collab::make_patch(&shown(&ana), &shown(&ben)).map(|p| p.is_empty()).unwrap_or(false));
+    let input = |cell: &str| {
+        let at = gridcraft_engine::core::CellRef::parse(cell).unwrap_or_default();
+        shown(&ana).sheets.first().and_then(|s| s.cell(at).map(|c| c.input_text())).unwrap_or_default()
+    };
+    assert_eq!(input("A4"), "South", "the Subtotal is undone");
+    assert_eq!(input("C1"), "Notes");
+    assert_eq!(input("D2"), "Ben was here");
 }

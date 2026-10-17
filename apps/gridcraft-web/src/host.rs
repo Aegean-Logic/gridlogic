@@ -28,6 +28,9 @@
 //! - `gridcraft:collab:checkpoint` (from the parent): `{ id }`; answered with
 //!   `gridcraft:collab:checkpointData { id, seq, name, bytes }`, the shared workbook (without this
 //!   person's unconfirmed edits) as .xlsx and its log position.
+//! - `gridcraft:collab:selection` (to the parent): `{ json }`, this person's position
+//!   (`{sheet, active, ranges}`) whenever it changes; `gridcraft:collab:presence` (from the
+//!   parent): `{ json }`, the others' (`[{name, color, sheet, active, ranges}]`), drawn on the grid.
 //! - `gridcraft:collab:stop` (from the parent) ends sharing; `gridcraft:collab:error` (to the
 //!   parent) `{ error }` says this copy can't follow the log and must rejoin.
 //!
@@ -36,12 +39,12 @@
 
 use std::cell::{Cell, RefCell};
 use std::collections::VecDeque;
-use std::rc::Rc;
+use std::rc::{Rc, Weak};
 
 use gridcraft_ui_egui::{Inbox, Services, SheetApp};
 
 use crate::acks::{Reply, SaveAcks};
-use crate::collab_msg::{self, FromPage};
+use crate::collab_msg::{self, FromPage, Position};
 use wasm_bindgen::JsCast as _;
 use wasm_bindgen::JsValue;
 use wasm_bindgen::closure::Closure;
@@ -75,6 +78,11 @@ pub struct Bridge {
     collab: Rc<RefCell<VecDeque<FromPage>>>,
     /// Asks for another frame when log entries change what's shown.
     ctx: Rc<RefCell<Option<egui::Context>>>,
+    /// This person's position as last told to the parent (JSON).
+    position: Rc<RefCell<String>>,
+    /// The app, for handling co-editing messages as they arrive (`attach`), and the files the
+    /// page sent that it hasn't opened yet.
+    app: Rc<RefCell<Option<(Weak<RefCell<SheetApp>>, Inbox)>>>,
 }
 
 impl Bridge {
@@ -98,6 +106,8 @@ impl Bridge {
             replies: Rc::default(),
             collab: Rc::default(),
             ctx: Rc::default(),
+            position: Rc::default(),
+            app: Rc::default(),
         })
     }
 
@@ -112,6 +122,24 @@ impl Bridge {
                 log::error!("couldn't hand {name} to the page: {e}");
             }
         }));
+    }
+
+    /// Handle co-editing messages as they arrive rather than at the next frame, so a hidden tab
+    /// (which draws none) keeps up with the others and answers save requests.
+    pub fn attach(&self, app: &Rc<RefCell<SheetApp>>, inbox: Inbox) {
+        *self.app.borrow_mut() = Some((Rc::downgrade(app), inbox));
+    }
+
+    /// Co-editing messages now, if the app is free and has opened every file the page sent (a
+    /// session starts on the file that came just before it).
+    fn sync_collab_now(&self) {
+        let Some((app, inbox)) = self.app.borrow().clone() else { return };
+        let opened = inbox.lock().map(|q| q.is_empty()).unwrap_or(false);
+        if let (true, Some(app)) = (opened, app.upgrade())
+            && let Ok(mut app) = app.try_borrow_mut()
+        {
+            self.sync_collab(&mut app);
+        }
     }
 
     /// `?author=`: the host's name for the user signs new notes and comments.
@@ -188,9 +216,30 @@ impl Bridge {
                     }
                 }
                 FromPage::Checkpoint { id } => self.post_checkpoint(app, id),
-                FromPage::Stop => app.session.collab_stop(),
+                FromPage::Stop => {
+                    app.session.collab_stop();
+                    app.presence.clear();
+                    changed = true;
+                }
+                FromPage::Presence(people) => {
+                    app.presence = people
+                        .into_iter()
+                        .map(|s| {
+                            let [r, g, b] = s.rgb();
+                            gridcraft_ui_egui::Presence {
+                                name: s.name,
+                                color: egui::Color32::from_rgb(r, g, b),
+                                sheet: s.sheet,
+                                active: s.active,
+                                ranges: s.ranges,
+                            }
+                        })
+                        .collect();
+                    changed = true;
+                }
             }
         }
+        self.post_position(app);
         if let Some(out) = app.session.collab_outgoing() {
             match serde_json::to_string(&out) {
                 Ok(json) => {
@@ -201,6 +250,20 @@ impl Bridge {
         }
         if changed && let Some(ctx) = self.ctx.borrow().as_ref() {
             ctx.request_repaint();
+        }
+    }
+
+    /// Tells the parent where this person is (their sheet and selection) when it has changed.
+    fn post_position(&self, app: &SheetApp) {
+        if app.session.collab_client().is_none() {
+            return;
+        }
+        let Some(d) = app.session.active() else { return };
+        let sheet = d.wb.active().map_or(0, |s| s.id);
+        let position = Position::new(sheet, d.selection.active, &d.selection.ranges);
+        let Ok(json) = serde_json::to_string(&position) else { return };
+        if *self.position.borrow() != json && self.send(&[("type", "gridcraft:collab:selection".into()), ("json", json.as_str().into())]) {
+            *self.position.borrow_mut() = json;
         }
     }
 
@@ -298,6 +361,7 @@ impl Bridge {
                     }
                     Err(e) => bridge.post_collab_error(&e),
                 }
+                bridge.sync_collab_now();
                 ctx.request_repaint();
             } else if acks && let Some(reply) = Reply::parse(&kind, number(&data, "id"), string(&data, "name"), string(&data, "error")) {
                 let mut replies = replies.borrow_mut();

@@ -59,7 +59,8 @@ fn edit(rng: &mut Rng, sheets: &[String]) -> (&'static str, Json) {
     let c = rng.below(6);
     let other = rng.pick(sheets).clone();
     match r {
-        0..=29 => {
+        0..=4 => ("edit.undo", json!({})),
+        5..=29 => {
             let input = match rng.below(5) {
                 0 => format!("{}", rng.below(1000)),
                 1 => format!("text {}", rng.below(50)),
@@ -85,7 +86,8 @@ fn edit(rng: &mut Rng, sheets: &[String]) -> (&'static str, Json) {
         83..=87 => ("sheet.activate", json!({"sheet": rng.below(sheets.len() as u64)})),
         88..=90 => ("edit.cut", json!({"range": range(rng)})),
         91..=93 => ("edit.paste", json!({"at": cell(rng)})),
-        94..=96 => ("data.sortAscending", json!({"range": range(rng)})),
+        94..=95 => ("data.sortAscending", json!({"range": range(rng)})),
+        96 => ("edit.redo", json!({})),
         _ => ("formulas.defineName", json!({"name": format!("N{}", rng.below(5)), "refersTo": format!("=$A${row}:$B${}", row + 2)})),
     }
 }
