@@ -73,6 +73,48 @@ Local test: `python3 -m http.server 8765` inside the folder, then open http://lo
   downloads) are blocked.
 - Don't send `X-Frame-Options: DENY` or a `frame-ancestors` CSP that excludes the embedding page.
 
+## Opening and saving through the page (`?host=parent`)
+
+With `?host=parent` in the iframe `src`, GridCraft opens workbooks the embedding page sends it
+and hands the page every file it saves instead of downloading it. This suits a page with its own
+storage, such as a Nextcloud app. The page must be on the same origin as GridCraft: messages
+from anywhere else are ignored. In this mode GridCraft starts with an empty workbook.
+
+| Message | Direction | Fields |
+|---|---|---|
+| `gridcraft:ready` | to the page | `version`; `ack` (true with `&ack=1`). Send the file to open after this. |
+| `gridcraft:open` | from the page | `name`, `bytes` (`ArrayBuffer` or `Uint8Array`) |
+| `gridcraft:save` | to the page | `name`, `bytes` (a transferred `ArrayBuffer`); `id` with `&ack=1`. Sent for Save, Save As (.xlsx) and Export as PDF. |
+| `gridcraft:saved` | from the page (`&ack=1`) | `id`; optional `name` when the page stored the file under another name |
+| `gridcraft:saveFailed` | from the page (`&ack=1`) | `id`, `error` (shown to the user) |
+| `gridcraft:dirty` | to the page | `dirty`: whether there are unsaved changes |
+| `gridcraft:failed` | to the page | `error`: the app couldn't start |
+
+Other query flags: `&author=Name` signs new notes and comments.
+
+**Save confirmation (`&ack=1`).** Without it, a workbook counts as saved as soon as GridCraft
+hands it to the page, even if the page then fails to store it. With it, the workbook counts as
+saved only when the page answers `gridcraft:saved` with the save's `id`. It is then saved as it
+was when handed over, so edits made since stay unsaved. `gridcraft:saveFailed` leaves it unsaved
+and shows the user the page's `error`. An older GridCraft ignores the flag; it answers
+`gridcraft:ready` without `ack: true`.
+
+```js
+const frame = document.querySelector("iframe"); // src="/gridcraft/?host=parent&ack=1"
+addEventListener("message", async (event) => {
+  if (event.origin !== location.origin || event.source !== frame.contentWindow) return;
+  const m = event.data;
+  if (m.type === "gridcraft:ready") {
+    const bytes = await (await fetch(fileUrl)).arrayBuffer();
+    frame.contentWindow.postMessage({ type: "gridcraft:open", name: "Budget.xlsx", bytes }, location.origin, [bytes]);
+  } else if (m.type === "gridcraft:save") {
+    const r = await fetch(fileUrl, { method: "PUT", body: m.bytes });
+    const reply = r.ok ? { type: "gridcraft:saved", id: m.id } : { type: "gridcraft:saveFailed", id: m.id, error: `${r.status} ${r.statusText}` };
+    frame.contentWindow.postMessage(reply, location.origin);
+  }
+});
+```
+
 ## Renderer selection
 
 GridCraft's web build is the same egui app as the desktop one, compiled to wasm

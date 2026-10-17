@@ -285,6 +285,10 @@ impl Session {
     pub fn doc_mut(&mut self) -> Result<&mut DocState> {
         self.active_mut().ok_or(EngineError::NoDocument)
     }
+    /// The open document with this `uid`, active or not (`None` once it's closed).
+    pub fn document_mut(&mut self, uid: u64) -> Option<&mut DocState> {
+        self.docs.iter_mut().find(|d| d.uid == uid)
+    }
     pub fn add_document(&mut self, d: DocState) -> usize {
         self.docs.push(d);
         self.active = self.docs.len() - 1;

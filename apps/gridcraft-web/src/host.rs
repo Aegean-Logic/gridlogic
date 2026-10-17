@@ -10,6 +10,13 @@
 //! - `gridcraft:dirty` (to the parent): `{ dirty }` whenever unsaved changes appear or go away.
 //! - `gridcraft:failed` (to the parent): `{ error }` when the app couldn't start.
 //!
+//! With `&ack=1` the parent confirms every save (`acks`): `gridcraft:save` also carries an `id`,
+//! and the parent answers `gridcraft:saved { id, name? }` once it stored the file or
+//! `gridcraft:saveFailed { id, error }` when it couldn't. A workbook counts as saved only on
+//! `gridcraft:saved`; a failure is shown to the user. `gridcraft:ready` says `{ ack: true }`
+//! when this is on, so a parent can tell an older GridCraft that ignores the flag. Without it, a
+//! workbook counts as saved as soon as it's handed over.
+//!
 //! Only the parent window on the page's own origin is heard or answered. In host mode the page
 //! starts with an empty workbook instead of a sample, and the parent guards leaving the page.
 
@@ -17,6 +24,8 @@ use std::cell::{Cell, RefCell};
 use std::rc::Rc;
 
 use gridcraft_ui_egui::{Inbox, Services, SheetApp};
+
+use crate::acks::{Reply, SaveAcks};
 use wasm_bindgen::JsCast as _;
 use wasm_bindgen::JsValue;
 use wasm_bindgen::closure::Closure;
@@ -28,6 +37,9 @@ const WORKBOOK_EXTS: &[&str] = &["xlsx"];
 /// The longest user name taken from `?author=`.
 const MAX_AUTHOR_CHARS: usize = 200;
 
+/// The most save answers held between two frames; more are dropped.
+const MAX_REPLIES: usize = 256;
+
 #[derive(Clone)]
 pub struct Bridge {
     window: web_sys::Window,
@@ -37,18 +49,24 @@ pub struct Bridge {
     saved: Rc<RefCell<Vec<String>>>,
     /// The unsaved-changes state last reported to the parent.
     reported: Rc<Cell<Option<bool>>>,
+    /// `&ack=1`: saves the parent hasn't answered yet; `None` when the parent doesn't answer.
+    acks: Option<Rc<RefCell<SaveAcks>>>,
+    /// The parent's answers since the last frame.
+    replies: Rc<RefCell<Vec<Reply>>>,
 }
 
 impl Bridge {
-    /// `None` when the page isn't framed (there is no parent to talk to).
-    pub fn new() -> Option<Self> {
+    /// `None` when the page isn't framed (there is no parent to talk to). `ack`: the parent
+    /// confirms saves (`&ack=1`).
+    pub fn new(ack: bool) -> Option<Self> {
         let window = web_sys::window()?;
         let parent = window.parent().ok().flatten()?;
         if js_sys::Object::is(&parent, &window) {
             return None;
         }
         let origin = window.location().origin().ok()?;
-        Some(Self { window, parent, origin, saved: Rc::default(), reported: Rc::default() })
+        let acks = ack.then(Rc::default);
+        Some(Self { window, parent, origin, saved: Rc::default(), reported: Rc::default(), acks, replies: Rc::default() })
     }
 
     /// Send saved and exported files to the parent instead of downloading them, and hear files
@@ -72,7 +90,7 @@ impl Bridge {
     }
 
     pub fn post_ready(&self) {
-        self.send(&[("type", "gridcraft:ready".into()), ("version", env!("CARGO_PKG_VERSION").into())]);
+        self.send(&[("type", "gridcraft:ready".into()), ("version", env!("CARGO_PKG_VERSION").into()), ("ack", self.acks.is_some().into())]);
     }
 
     pub fn post_failed(&self, error: &str) {
@@ -80,15 +98,27 @@ impl Bridge {
     }
 
     /// After each frame: a workbook handed to the parent this frame counts as saved under the
-    /// name it was saved as, and the parent hears when unsaved changes appear or go away.
+    /// name it was saved as (with `&ack=1`, once the parent says it stored it), and the parent
+    /// hears when unsaved changes appear or go away.
     pub fn sync(&self, app: &mut SheetApp) {
-        let saved = std::mem::take(&mut *self.saved.borrow_mut());
-        if let Some(name) = saved.iter().rev().find(|name| is_workbook(name))
-            && let Some(doc) = app.session.active_mut()
-        {
-            doc.saved = doc.wb.clone();
-            if doc.path.is_none() {
-                doc.title = name.clone();
+        if let Some(acks) = &self.acks {
+            let mut acks = acks.borrow_mut();
+            acks.bind(&app.session);
+            let replies = std::mem::take(&mut *self.replies.borrow_mut());
+            for reply in replies {
+                if let Some(shown) = acks.apply(reply, &mut app.session) {
+                    app.message = Some(("GridCraft".into(), shown));
+                }
+            }
+        } else {
+            let saved = std::mem::take(&mut *self.saved.borrow_mut());
+            if let Some(name) = saved.iter().rev().find(|name| is_workbook(name))
+                && let Some(doc) = app.session.active_mut()
+            {
+                doc.saved = doc.wb.clone();
+                if doc.path.is_none() {
+                    doc.title = name.clone();
+                }
             }
         }
         let dirty = app.session.documents().iter().any(|d| d.is_dirty());
@@ -100,30 +130,54 @@ impl Bridge {
     fn post_save(&self, path: &str, bytes: &[u8]) -> Result<(), String> {
         let name = std::path::Path::new(path).file_name().map(|n| n.to_string_lossy().to_string()).unwrap_or_else(|| path.to_string());
         let buffer = js_sys::Uint8Array::from(bytes).buffer();
-        let message = message(&[("type", "gridcraft:save".into()), ("name", name.as_str().into()), ("bytes", buffer.clone().into())])
-            .ok_or_else(|| "couldn't build the message".to_string())?;
-        self.parent
-            .post_message_with_transfer(&message, &self.origin, &js_sys::Array::of1(&buffer))
-            .map_err(|e| e.as_string().unwrap_or_else(|| format!("{e:?}")))?;
-        self.saved.borrow_mut().push(name);
-        Ok(())
+        let id = self.acks.as_ref().map(|acks| acks.borrow_mut().begin(&name, is_workbook(&name)));
+        let mut fields = vec![("type", "gridcraft:save".into()), ("name", name.as_str().into()), ("bytes", buffer.clone().into())];
+        if let Some(id) = id {
+            // Ids stay far below 2^53, so a JavaScript number holds them exactly.
+            fields.push(("id", JsValue::from_f64(id as f64)));
+        }
+        let sent = message(&fields).ok_or_else(|| "couldn't build the message".to_string()).and_then(|message| {
+            self.parent
+                .post_message_with_transfer(&message, &self.origin, &js_sys::Array::of1(&buffer))
+                .map_err(|e| e.as_string().unwrap_or_else(|| format!("{e:?}")))
+        });
+        match (sent, id, &self.acks) {
+            (Err(e), Some(id), Some(acks)) => {
+                acks.borrow_mut().forget(id);
+                Err(e)
+            }
+            (Err(e), ..) => Err(e),
+            (Ok(()), None, _) => {
+                self.saved.borrow_mut().push(name);
+                Ok(())
+            }
+            (Ok(()), ..) => Ok(()),
+        }
     }
 
     fn listen(&self, inbox: Inbox, ctx: egui::Context) {
         let parent = self.parent.clone();
         let origin = self.origin.clone();
+        let acks = self.acks.is_some();
+        let replies = self.replies.clone();
         let on_message = Closure::<dyn FnMut(web_sys::MessageEvent)>::new(move |event: web_sys::MessageEvent| {
             if event.origin() != origin || !event.source().is_some_and(|s| js_sys::Object::is(&s, &parent)) {
                 return;
             }
             let data = event.data();
-            if string(&data, "type").as_deref() != Some("gridcraft:open") {
-                return;
+            let Some(kind) = string(&data, "type") else { return };
+            if kind == "gridcraft:open" {
+                let name = string(&data, "name").filter(|n| !n.trim().is_empty()).unwrap_or_else(|| "Book.xlsx".to_string());
+                let Some(bytes) = bytes(&data) else { return };
+                inbox.lock().unwrap_or_else(|e| e.into_inner()).push((name, bytes));
+                ctx.request_repaint();
+            } else if acks && let Some(reply) = Reply::parse(&kind, number(&data, "id"), string(&data, "name"), string(&data, "error")) {
+                let mut replies = replies.borrow_mut();
+                if replies.len() < MAX_REPLIES {
+                    replies.push(reply);
+                }
+                ctx.request_repaint();
             }
-            let name = string(&data, "name").filter(|n| !n.trim().is_empty()).unwrap_or_else(|| "Book.xlsx".to_string());
-            let Some(bytes) = bytes(&data) else { return };
-            inbox.lock().unwrap_or_else(|e| e.into_inner()).push((name, bytes));
-            ctx.request_repaint();
         });
         if self.window.add_event_listener_with_callback("message", on_message.as_ref().unchecked_ref()).is_ok() {
             // The listener lives as long as the page.
@@ -151,6 +205,10 @@ fn message(fields: &[(&str, JsValue)]) -> Option<js_sys::Object> {
 
 fn string(data: &JsValue, key: &str) -> Option<String> {
     js_sys::Reflect::get(data, &JsValue::from_str(key)).ok()?.as_string()
+}
+
+fn number(data: &JsValue, key: &str) -> Option<f64> {
+    js_sys::Reflect::get(data, &JsValue::from_str(key)).ok()?.as_f64()
 }
 
 /// `bytes` as an `ArrayBuffer` or `Uint8Array`.

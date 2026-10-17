@@ -26,8 +26,12 @@ pub fn start() {
             create.instance_descriptor.backends = eframe::wgpu::Backends::GL;
         }
         // `?host=parent`: a same-origin page framing GridCraft (such as a Nextcloud app) opens
-        // workbooks in it and stores what it saves (`host`).
-        let bridge = if query_param("host").as_deref() == Some("parent") { crate::host::Bridge::new() } else { None };
+        // workbooks in it and stores what it saves (`host`); `&ack=1`: it confirms each save.
+        let bridge = if query_param("host").as_deref() == Some("parent") {
+            crate::host::Bridge::new(query_param("ack").as_deref() == Some("1"))
+        } else {
+            None
+        };
         let app_bridge = bridge.clone();
         let result = eframe::WebRunner::new()
             .start(
