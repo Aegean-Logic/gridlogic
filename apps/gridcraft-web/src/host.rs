@@ -19,15 +19,17 @@
 //!
 //! Co-editing (the page runs the session with the server; `collab_msg` checks what it sends):
 //!
-//! - `gridcraft:collab:start` (from the parent): `{ client, seq, readOnly? }`, after `gridcraft:open`: the
-//!   workbook just opened is the shared one as of log position `seq`.
+//! - `gridcraft:collab:start` (from the parent): `{ client, seq, readOnly?, json? }`, after
+//!   `gridcraft:open`: the workbook just opened is the shared one as of log position `seq`;
+//!   `json`, the session's sheet ids in order as kept with the checkpoint (XLSX loses them).
 //! - `gridcraft:collab:entries` (from the parent): `{ json }`, the server's log entries in order
 //!   (JSON text of `collab::Incoming`s).
 //! - `gridcraft:collab:op` (to the parent): `{ json }`, this person's next op for the server
 //!   (`collab::Outgoing`). The next comes once this one is back in the log.
 //! - `gridcraft:collab:checkpoint` (from the parent): `{ id }`; answered with
-//!   `gridcraft:collab:checkpointData { id, seq, name, bytes }`, the shared workbook (without this
-//!   person's unconfirmed edits) as .xlsx and its log position.
+//!   `gridcraft:collab:checkpointData { id, seq, name, sheetIds, bytes }`, the shared workbook
+//!   (without this person's unconfirmed edits) as .xlsx, its log position, and its sheet ids
+//!   (JSON text) for the server to keep with it.
 //! - `gridcraft:collab:selection` (to the parent): `{ json }`, this person's position
 //!   (`{sheet, active, ranges}`) whenever it changes; `gridcraft:collab:presence` (from the
 //!   parent): `{ json }`, the others' (`[{name, color, sheet, active, ranges}]`), drawn on the grid.
@@ -225,10 +227,13 @@ impl Bridge {
         let mut changed = false;
         for msg in queued {
             match msg {
-                FromPage::Start { client, seq, read_only } => match app.session.collab_start(client, seq) {
-                    Ok(()) => app.session.collab_set_read_only(read_only),
-                    Err(e) => self.post_collab_error(&e.to_string()),
-                },
+                FromPage::Start { client, seq, read_only, sheet_ids } => {
+                    let adopted = if sheet_ids.is_empty() { Ok(()) } else { app.session.collab_adopt_sheet_ids(&sheet_ids) };
+                    match adopted.and_then(|()| app.session.collab_start(client, seq)) {
+                        Ok(()) => app.session.collab_set_read_only(read_only),
+                        Err(e) => self.post_collab_error(&e.to_string()),
+                    }
+                }
                 FromPage::Entries(entries) => {
                     for entry in entries {
                         if let Err(e) = app.session.collab_receive(entry) {
@@ -305,12 +310,16 @@ impl Bridge {
                 return;
             }
         };
+        // XLSX doesn't keep sheet ids: the page keeps them with the checkpoint for joiners.
+        let ids: Vec<u64> = wb.sheets.iter().map(|s| s.id).collect();
+        let sheet_ids = serde_json::to_string(&ids).unwrap_or_default();
         let buffer = js_sys::Uint8Array::from(bytes.as_slice()).buffer();
         let fields = [
             ("type", "gridcraft:collab:checkpointData".into()),
             ("id", JsValue::from_f64(id as f64)),
             ("seq", JsValue::from_f64(seq as f64)),
             ("name", name.as_str().into()),
+            ("sheetIds", sheet_ids.as_str().into()),
             ("bytes", buffer.clone().into()),
         ];
         if let Some(m) = message(&fields)

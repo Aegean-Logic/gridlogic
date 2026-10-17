@@ -136,6 +136,34 @@ impl Session {
         Ok(())
     }
 
+    /// Gives the active document's sheets, in order, the ids the shared session knows them by
+    /// (`ids`, from the checkpoint it was opened from). XLSX doesn't keep sheet ids: a workbook
+    /// opened from a checkpoint numbers its sheets by position, while the people already in the
+    /// session keep the ids sheets were made with. Call before [`Session::collab_start`]. An
+    /// error, changing nothing, unless there's one distinct non-zero id per sheet.
+    pub fn collab_adopt_sheet_ids(&mut self, ids: &[u64]) -> Result<()> {
+        let d = self.doc_mut()?;
+        let distinct: std::collections::BTreeSet<u64> = ids.iter().copied().collect();
+        if ids.len() != d.wb.sheets.len() || distinct.len() != ids.len() || distinct.contains(&0) {
+            return Err(EngineError::Other("co-editing: the shared sheet ids don't match the workbook".into()));
+        }
+        if d.wb.sheets.iter().zip(ids).all(|(s, id)| s.id == *id) {
+            return Ok(());
+        }
+        let dirty = d.is_dirty();
+        let wb = Arc::make_mut(&mut d.wb);
+        for (sheet, id) in wb.sheets.iter_mut().zip(ids) {
+            if sheet.id != *id {
+                Arc::make_mut(sheet).id = *id;
+            }
+        }
+        // Ids aren't content: the workbook is as saved as it was.
+        if !dirty {
+            d.saved = d.wb.clone();
+        }
+        Ok(())
+    }
+
     /// This person can view the shared workbook but not edit it: an edit is taken back with a
     /// message (selecting, scrolling and switching sheets still work).
     pub fn collab_set_read_only(&mut self, read_only: bool) {

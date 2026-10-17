@@ -19,7 +19,8 @@ pub type CloudInbox = Arc<Mutex<Vec<(u64, Result<Json, String>)>>>;
 /// once; its answer arrives in `inbox` under the same id (the host asks for a repaint). All
 /// operations are about the workbook that's open:
 ///
-/// - `share.info` `{}` → `{name, signedIn, inCloud, canShare, account?, server?}`
+/// - `share.info` `{}` → `{name, signedIn, inCloud, canShare, account?, server?, link?}`; `link`
+///   when the workbook was opened from a shared link (its address), by someone who can't share it
 /// - `share.search` `{query}` → `[{label, detail?, type, shareWith}]`, `type` one of `user`,
 ///   `group`, `email`, `remote`
 /// - `share.list` `{}` → `[{id, type, shareWith, label, edit, url?, password, expiration?}]`,
@@ -45,6 +46,8 @@ struct Info {
     account: Option<String>,
     /// The server last signed in to, to sign in again.
     server: Option<String>,
+    /// Opened from this shared link (a guest: they can pass the link on, nothing more).
+    link: Option<String>,
 }
 
 #[derive(Clone, Debug, PartialEq, Deserialize)]
@@ -183,7 +186,7 @@ impl ShareDialog {
             match what {
                 Asked::Info | Asked::Upload | Asked::SignIn => {
                     let info: Info = serde_json::from_value(answer).unwrap_or_default();
-                    let ready = info.signed_in && info.in_cloud;
+                    let ready = info.signed_in && info.in_cloud && info.link.is_none();
                     if !matches!(what, Asked::Info) {
                         // "Uploading…" or "Finish signing in…" is done.
                         self.status = None;
@@ -329,6 +332,16 @@ fn body(app: &mut SheetApp, ui: &mut egui::Ui, d: &mut ShareDialog, t: &Tokens) 
         if ui.add_enabled(!d.busy(), egui::Button::new("Upload to Nextcloud")).clicked() {
             d.status = Some(("Uploading…".into(), false));
             d.ask(app, "share.upload", json!({}), Asked::Upload);
+        }
+        status(ui, d, t);
+        return;
+    }
+    if let Some(link) = info.link.as_ref().filter(|_| !info.can_share) {
+        ui.label("You opened this workbook from a shared link. Anyone you give the link to can open it as you did.");
+        ui.add_space(8.0);
+        if ui.button("🔗 Copy link").clicked() {
+            ui.ctx().copy_text(link.clone());
+            d.status = Some(("Link copied.".into(), false));
         }
         status(ui, d, t);
         return;

@@ -61,13 +61,17 @@ Phase 2 pieces:
   - joins pinned to the file's ETag
   - sends ops in order, with retries
   - polls for others' entries
-  - the member with the lowest client id writes the checkpoints
+  - the member with the lowest client id writes the checkpoints, and the server keeps the
+    checkpoint's sheet ids for joiners
+- **Shared links.** Anyone with a link to the file (`/s/{token}`) joins the same session as a
+  guest. They use the link's own WebDAV address and `/apps/gridcraft/s/{token}/collab/*`.
+  Membership is proved with a random key handed out on join, and edits need an edit link.
 
 Engine pieces from phase 1:
 
 | Piece | Code | Proof |
 |---|---|---|
-| Stable sheet ids | `Sheet::id`, `Workbook::ensure_sheet_ids` | `tests/sheet_ids.rs` |
+| Stable sheet ids | `Sheet::id`, `Workbook::ensure_sheet_ids`; kept with each checkpoint and adopted on join (`Session::collab_adopt_sheet_ids`), since XLSX loses them | `tests/sheet_ids.rs`; `tests/collab_scenarios.rs` (joining from a checkpoint after a sheet was added in front) |
 | Content patches | `collab::patch` (`make_patch`, `apply_patch`) | Every `Sheet`/`Workbook` field is replicated or listed as local (unit test); 47 commands replicate exactly (`tests/collab_patch.rs`) |
 | Structural edits | `Ctx::record`, `cmd::sheet::apply_shift` (shared with the commands), `collab::replay` | Structural ops carry the shift, not the shifted cells; hostile ops are refused |
 | Transform | `collab::rebase` | Every pair of row/column inserts and deletes commutes (exhaustive unit test) |
@@ -188,7 +192,7 @@ shared session:
 
 | Piece | Location | Notes |
 |---|---|---|
-| Stable sheet ids | `crates/model` (`Sheet.id: u32`, assigned on load in sheet order, new sheets `max + 1`) | Serialised in JSON; not in XLSX (reassigned on load, which is deterministic). |
+| Stable sheet ids | `crates/model` (`Sheet.id: u64`, assigned on load in sheet order; sheets made in a session are namespaced by client) | Serialised in JSON; not in XLSX. Load order alone isn't enough: a sheet made in a session and moved before older ones would shift theirs. So each checkpoint hands its ids to the server (`checkpoint_sheets`), and joiners adopt them before starting. |
 | `collab` module: `Op`, `StructEdit`, `Patch`, recorder, `make_patch(before, after)`, `apply`, `transform`, `Replica` (confirmed + pending + rebase + undo) | `crates/engine/src/collab/` (L5) | No I/O, wasm-safe, all native-testable. Refactor the structural commands' bodies into a reusable `apply_edit(&mut Workbook, sheet_id, &Edit)`. |
 | Convergence fuzz test | `crates/engine/tests/collab_fuzz.rs` | N replicas, random commands (reusing `command_sequence_fuzz.rs`), random delivery interleavings. Assert identical workbooks after `canonical()`. The test that makes or breaks this. |
 | Host bridge messages | `apps/gridcraft-web/src/host.rs` | `gridcraft:collab {clientId, user, color}` (from the page) starts a session. `gridcraft:ops` (to the page) carries local ops. `gridcraft:remote` (from the page) carries ordered ops. `gridcraft:presence` goes both ways. Networking stays outside GridLogic, as today. |

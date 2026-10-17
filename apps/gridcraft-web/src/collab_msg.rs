@@ -18,9 +18,11 @@ const MAX_SAFE_INTEGER: f64 = 9_007_199_254_740_991.0;
 /// What the page asks of the shared session.
 #[derive(Debug, PartialEq)]
 pub enum FromPage {
-    /// `gridcraft:collab:start {client, seq, readOnly?}`: the workbook just opened is the shared
-    /// one as of log position `seq`; this person is `client`, and with `readOnly` can't edit.
-    Start { client: u64, seq: u64, read_only: bool },
+    /// `gridcraft:collab:start {client, seq, readOnly?, json?}`: the workbook just opened is the
+    /// shared one as of log position `seq`; this person is `client`, and with `readOnly` can't
+    /// edit. `json`: the session's sheet ids in order, from the checkpoint (empty: keep the ids
+    /// the file was opened with).
+    Start { client: u64, seq: u64, read_only: bool, sheet_ids: Vec<u64> },
     /// `gridcraft:collab:entries {json}`: log entries, in order, as JSON text.
     Entries(Vec<Incoming>),
     /// `gridcraft:collab:checkpoint {id}`: send the shared workbook to save.
@@ -81,9 +83,14 @@ pub fn parse(
 ) -> Option<Result<FromPage, String>> {
     let need = |v: Option<f64>, what: &str| whole(v).ok_or_else(|| format!("{kind}: `{what}` must be a whole number"));
     Some(match kind {
-        "gridcraft:collab:start" => {
-            need(client, "client").and_then(|client| Ok(FromPage::Start { client, seq: need(seq, "seq")?, read_only: read_only.unwrap_or(false) }))
-        }
+        "gridcraft:collab:start" => need(client, "client").and_then(|client| {
+            let sheet_ids = match json {
+                None | Some("") => Vec::new(),
+                Some(text) if text.len() <= MAX_JSON_BYTES => serde_json::from_str(text).map_err(|e| format!("{kind}: sheet ids: {e}"))?,
+                Some(_) => return Err(format!("{kind}: `json` is too large")),
+            };
+            Ok(FromPage::Start { client, seq: need(seq, "seq")?, read_only: read_only.unwrap_or(false), sheet_ids })
+        }),
         "gridcraft:collab:entries" => match json {
             None => Err(format!("{kind}: `json` is missing")),
             Some(text) if text.len() > MAX_JSON_BYTES => Err(format!("{kind}: more than {MAX_JSON_BYTES} bytes")),
@@ -141,11 +148,16 @@ mod tests {
         assert_eq!(parse("gridcraft:open", None, None, None, None, None), None, "not a co-editing message");
         assert_eq!(
             parse("gridcraft:collab:start", Some(3.0), Some(0.0), None, None, None),
-            Some(Ok(FromPage::Start { client: 3, seq: 0, read_only: false }))
+            Some(Ok(FromPage::Start { client: 3, seq: 0, read_only: false, sheet_ids: vec![] }))
         );
         assert_eq!(
+            parse("gridcraft:collab:start", Some(3.0), Some(0.0), Some("[21474836481,1]"), None, None),
+            Some(Ok(FromPage::Start { client: 3, seq: 0, read_only: false, sheet_ids: vec![21474836481, 1] }))
+        );
+        assert!(matches!(parse("gridcraft:collab:start", Some(3.0), Some(0.0), Some("[-1]"), None, None), Some(Err(_))));
+        assert_eq!(
             parse("gridcraft:collab:start", Some(3.0), Some(0.0), None, None, Some(true)),
-            Some(Ok(FromPage::Start { client: 3, seq: 0, read_only: true }))
+            Some(Ok(FromPage::Start { client: 3, seq: 0, read_only: true, sheet_ids: vec![] }))
         );
         assert!(matches!(parse("gridcraft:collab:start", Some(3.5), Some(0.0), None, None, None), Some(Err(_))));
         assert!(matches!(parse("gridcraft:collab:start", Some(3.0), None, None, None, None), Some(Err(_))));

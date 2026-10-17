@@ -131,6 +131,66 @@ fn two_people_adding_a_sheet_keep_both() {
     assert!(a.contains(&"Ana's".to_string()) && a.contains(&"Ben's".to_string()), "{a:?}");
 }
 
+/// Someone joining from a checkpoint, after a sheet was added in front during the session: XLSX
+/// doesn't keep sheet ids, so the joiner adopts the session's, and their edits land on the
+/// sheet they see.
+#[test]
+fn joining_from_a_checkpoint_edits_the_same_sheets() {
+    let mut ana = Session::new();
+    ana.add_document(DocState::new(Workbook::new(), None, "Shared".into()));
+    if let Err(e) = ana.collab_start(1, 0) {
+        panic!("{e}");
+    }
+    if let Err(e) = ana.run("home.insertSheet", json!({"name": "Front", "before": 0})) {
+        panic!("{e}");
+    }
+    let mut log: Vec<Incoming> = Vec::new();
+    while let Some(out) = ana.collab_outgoing() {
+        let msg = Incoming { seq: log.len() as u64 + 1, client: out.client, client_seq: out.client_seq, base: out.base, op: out.op };
+        log.push(msg.clone());
+        if let Err(e) = ana.collab_receive(msg) {
+            panic!("{e}");
+        }
+    }
+    let Some((seq, wb)) = ana.collab_confirmed() else { panic!("not shared") };
+    let names: Vec<&str> = wb.sheets.iter().map(|s| s.name.as_str()).collect();
+    let ids: Vec<u64> = wb.sheets.iter().map(|s| s.id).collect();
+    let original = names.iter().position(|n| *n != "Front").unwrap_or_else(|| panic!("{names:?}"));
+
+    // The checkpoint, as the page saves it, opened by Carl.
+    let bytes = gridcraft_engine::io::save_bytes(&wb, "Shared.xlsx").unwrap_or_else(|e| panic!("{e}"));
+    let (opened, _) = gridcraft_engine::io::open_bytes("Shared.xlsx", &bytes).unwrap_or_else(|e| panic!("{e}"));
+    let mut carl = Session::new();
+    carl.add_document(DocState::new(opened, Some("Shared.xlsx".into()), "Shared".into()));
+    let loaded: Vec<u64> = carl.active().map(|d| d.wb.sheets.iter().map(|s| s.id).collect()).unwrap_or_default();
+    assert_ne!(loaded, ids, "the file alone numbers sheets by position");
+    assert!(carl.collab_adopt_sheet_ids(&[7, 7]).is_err(), "duplicates are refused");
+    assert!(carl.collab_adopt_sheet_ids(&ids).is_ok());
+    assert!(carl.active().is_some_and(|d| !d.is_dirty()), "adopting ids changes nothing to save");
+    if let Err(e) = carl.collab_start(3, seq) {
+        panic!("{e}");
+    }
+
+    // Carl types on the sheet that was there from the start; Ana sees it there.
+    let sheet = names.get(original).copied().unwrap_or_default();
+    if let Err(e) =
+        carl.run("sheet.activate", json!({"sheet": sheet})).and_then(|_| carl.run("cell.set", json!({"cell": "A1", "input": "From Carl"})))
+    {
+        panic!("{e}");
+    }
+    let Some(out) = carl.collab_outgoing() else { panic!("Carl sent nothing") };
+    if let Err(e) = ana.collab_receive(Incoming { seq: seq + 1, client: out.client, client_seq: out.client_seq, base: out.base, op: out.op }) {
+        panic!("{e}");
+    }
+    let at = gridcraft_engine::core::CellRef::parse("A1").unwrap_or_default();
+    let on = |name: &str| {
+        let wb = ana.active().map(|d| d.wb.clone()).unwrap_or_default();
+        wb.sheets.iter().find(|s| s.name == name).and_then(|s| s.cell(at).map(|c| c.input_text())).unwrap_or_default()
+    };
+    assert_eq!(on(sheet), "From Carl");
+    assert_eq!(on("Front"), "");
+}
+
 /// Sends whatever either has to send and delivers the log to both, until nobody has anything
 /// left (a server with no delays).
 fn settle(ana: &mut Person, ben: &mut Person, log: &mut Vec<Incoming>) {

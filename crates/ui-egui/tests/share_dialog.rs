@@ -161,6 +161,19 @@ fn desktop_signs_in_then_uploads_before_sharing() {
 }
 
 #[test]
+fn a_link_guest_can_only_pass_the_link_on() {
+    let fake = Fake::new(json!({"name": "Budget.xlsx", "signedIn": true, "inCloud": true, "canShare": false, "link": "https://cloud.example/s/abc"}));
+    let mut h = harness(&fake);
+    open(&mut h);
+    assert!(h.query_by_label("Add a name, group, or email").is_none(), "guests don't share");
+    h.get_by_label("🔗 Copy link").click();
+    h.run_steps(4);
+    assert!(h.query_by_label_contains("Link copied.").is_some());
+    let ops: Vec<String> = fake.ops().into_iter().map(|(op, _)| op).collect();
+    assert_eq!(ops, ["share.info"], "nothing asked of the cloud but the workbook's info");
+}
+
+#[test]
 fn without_a_cloud_share_is_the_export_menu() {
     let mut session = Session::new();
     session.new_workbook();

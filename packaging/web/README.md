@@ -107,11 +107,11 @@ merging; the page connects it to a server that orders everyone's edits into one 
 
 | Message | Direction | Fields |
 |---|---|---|
-| `gridcraft:collab:start` | from the page | `client` (this person's id from the server, 1 to 2³²−1), `seq`, optional `readOnly` (this person can view but not edit: edits are taken back with a message). Send right after `gridcraft:open`: the workbook just opened is the shared one as of log position `seq`. |
+| `gridcraft:collab:start` | from the page | `client` (this person's id from the server, 1 to 2³²−1), `seq`, optional `readOnly` (this person can view but not edit: edits are taken back with a message), optional `json` (the `sheetIds` kept with the checkpoint the file was saved at). Send right after `gridcraft:open`: the workbook just opened is the shared one as of log position `seq`. |
 | `gridcraft:collab:entries` | from the page | `json`: the server's log entries in order, as JSON text: `[{seq, client, client_seq, base, op}]`, `op` exactly as the server received it. An entry whose op doesn't parse becomes a no-op in its place. |
 | `gridcraft:collab:op` | to the page | `json`: this person's next edit for the server, `{client, client_seq, base, op}`. The next comes once this one is back in the log, so send them in order and retry a failed one (the server must recognise a repeated `client`/`client_seq`). |
 | `gridcraft:collab:checkpoint` | from the page | `id`: asks for the shared workbook to save to the file. |
-| `gridcraft:collab:checkpointData` | to the page | `id`, `seq`, `name`, `bytes` (.xlsx): the workbook as everyone has it at log position `seq`, without this person's unconfirmed edits. |
+| `gridcraft:collab:checkpointData` | to the page | `id`, `seq`, `name`, `bytes` (.xlsx): the workbook as everyone has it at log position `seq`, without this person's unconfirmed edits. `sheetIds` (JSON text): its sheets' ids in order. XLSX doesn't keep them, so the server keeps them with the checkpoint and hands them to people who join from that file. |
 | `gridcraft:collab:selection` | to the page | `json`: this person's position, `{sheet, active, ranges}` (sheet id, cell, ranges), whenever it changes. |
 | `gridcraft:collab:presence` | from the page | `json`: where the others are, `[{name, color: "#rrggbb", sheet, active, ranges}]`; drawn on the grid in their colour with their name. |
 | `gridcraft:collab:stop` | from the page | Ends sharing. |
