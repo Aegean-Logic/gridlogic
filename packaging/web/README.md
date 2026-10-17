@@ -82,7 +82,7 @@ from anywhere else are ignored. In this mode GridLogic starts with an empty work
 
 | Message | Direction | Fields |
 |---|---|---|
-| `gridcraft:ready` | to the page | `version`; `ack` (true with `&ack=1`). Send the file to open after this. |
+| `gridcraft:ready` | to the page | `version`; `ack` (true with `&ack=1`); `collab` (true: this build can co-edit). Send the file to open after this. |
 | `gridcraft:open` | from the page | `name`, `bytes` (`ArrayBuffer` or `Uint8Array`) |
 | `gridcraft:save` | to the page | `name`, `bytes` (a transferred `ArrayBuffer`); `id` with `&ack=1`. Sent for Save, Save As (.xlsx) and Export as PDF. |
 | `gridcraft:saved` | from the page (`&ack=1`) | `id`; optional `name` when the page stored the file under another name |
@@ -98,6 +98,30 @@ saved only when the page answers `gridcraft:saved` with the save's `id`. It is t
 was when handed over, so edits made since stay unsaved. `gridcraft:saveFailed` leaves it unsaved
 and shows the user the page's `error`. An older GridLogic ignores the flag; it answers
 `gridcraft:ready` without `ack: true`.
+
+### Co-editing
+
+Several people can edit one workbook at once (`docs/co-editing.md`). GridLogic does all the
+merging; the page connects it to a server that orders everyone's edits into one numbered log
+(for Nextcloud, the `gridcraft-nextcloud` app's `/apps/gridcraft/collab/*` endpoints).
+
+| Message | Direction | Fields |
+|---|---|---|
+| `gridcraft:collab:start` | from the page | `client` (this person's id from the server, 1 to 2³²−1), `seq`. Send right after `gridcraft:open`: the workbook just opened is the shared one as of log position `seq`. |
+| `gridcraft:collab:entries` | from the page | `json`: the server's log entries in order, as JSON text: `[{seq, client, client_seq, base, op}]`, `op` exactly as the server received it. An entry whose op doesn't parse becomes a no-op in its place. |
+| `gridcraft:collab:op` | to the page | `json`: this person's next edit for the server, `{client, client_seq, base, op}`. The next comes once this one is back in the log, so send them in order and retry a failed one (the server must recognise a repeated `client`/`client_seq`). |
+| `gridcraft:collab:checkpoint` | from the page | `id`: asks for the shared workbook to save to the file. |
+| `gridcraft:collab:checkpointData` | to the page | `id`, `seq`, `name`, `bytes` (.xlsx): the workbook as everyone has it at log position `seq`, without this person's unconfirmed edits. |
+| `gridcraft:collab:stop` | from the page | Ends sharing. |
+| `gridcraft:collab:error` | to the page | `error`: this copy can't follow the log (an entry missing or out of order). Rejoin: load the file again and start over. |
+
+The server's side of the contract:
+- Positions are gap-free, from 1.
+- Joining returns the position the current file was saved at, plus every entry after it.
+- A joiner that loaded the file before a newer save has to load it again.
+- Entries older than the oldest `base` anyone may still send must be kept.
+
+Undo is refused while sharing.
 
 ```js
 const frame = document.querySelector("iframe"); // src="/gridcraft/?host=parent&ack=1"

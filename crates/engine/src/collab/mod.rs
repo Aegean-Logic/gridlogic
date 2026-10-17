@@ -21,7 +21,7 @@ use gridcraft_model::Workbook;
 use serde::{Deserialize, Serialize};
 use serde_json::Value as Json;
 
-use crate::{DocState, Result, Session};
+use crate::{DocState, EngineError, Result, Session};
 
 /// One edit as the others receive it.
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
@@ -108,4 +108,90 @@ fn apply(d: &mut DocState, edits: &[StructEdit], patch: &Patch) -> Result<()> {
     }
     d.revision += 1;
     Ok(())
+}
+
+/// The shared document of a [`Session`] and this person's copy of it.
+pub(crate) struct Shared {
+    pub(crate) uid: u64,
+    replica: Replica,
+}
+
+/// Co-editing through a [`Session`]: once started, every edit of the shared document (from any
+/// command path: ribbon, keys, agents) goes into the outgoing queue, and the host feeds the
+/// server's log back in.
+impl Session {
+    /// Shares the active document, which is the shared workbook as of log position `seq`;
+    /// `client` is this person's id from the server.
+    pub fn collab_start(&mut self, client: u64, seq: u64) -> Result<()> {
+        let d = self.doc()?;
+        let replica = Replica::new(client, d.wb.clone(), seq)?;
+        self.collab = Some(Shared { uid: d.uid, replica });
+        Ok(())
+    }
+
+    pub fn collab_stop(&mut self) {
+        self.collab = None;
+    }
+
+    /// This person's client id while a document is shared.
+    pub fn collab_client(&self) -> Option<u64> {
+        self.collab.as_ref().map(|c| c.replica.client())
+    }
+
+    /// This person has edits the server hasn't confirmed.
+    pub fn collab_pending(&self) -> bool {
+        self.collab.as_ref().is_some_and(|c| c.replica.has_pending())
+    }
+
+    /// The next op to send to the server (one at a time: the next once this one comes back).
+    pub fn collab_outgoing(&mut self) -> Option<Outgoing> {
+        self.collab.as_mut().and_then(|c| c.replica.outgoing())
+    }
+
+    /// Applies the server's next log entry. An error means this copy can't follow the log (an
+    /// entry missing or out of order): rejoin from a fresh copy.
+    pub fn collab_receive(&mut self, msg: Incoming) -> Result<()> {
+        let Some(mut shared) = self.collab.take() else {
+            return Err(EngineError::Other("co-editing: no shared document".into()));
+        };
+        let r = match self.docs.iter_mut().find(|d| d.uid == shared.uid) {
+            Some(d) => shared.replica.receive(msg, d),
+            None => Err(EngineError::Other("co-editing: the shared document was closed".into())),
+        };
+        self.collab = Some(shared);
+        r
+    }
+
+    /// The shared workbook as everyone has it (without this person's unconfirmed edits) and its
+    /// log position: what a checkpoint saves.
+    pub fn collab_confirmed(&self) -> Option<(u64, Arc<Workbook>)> {
+        self.collab.as_ref().map(|c| (c.replica.seq(), c.replica.confirmed().clone()))
+    }
+
+    /// After a command on the shared document: its op goes to the others. If it can't be put into
+    /// an op, the edit is taken back rather than left on this screen only.
+    pub(crate) fn share_edit(&mut self, uid: u64, before: &Arc<Workbook>) -> Result<()> {
+        let Some(mut shared) = self.collab.take() else { return Ok(()) };
+        let r = match self.docs.iter_mut().find(|d| d.uid == uid) {
+            Some(d) => {
+                let edits = take_struct_log(d);
+                match capture(before, &d.wb, edits) {
+                    Ok(op) => {
+                        if !op.is_empty() {
+                            shared.replica.local(d, op);
+                        }
+                        Ok(())
+                    }
+                    Err(e) => {
+                        d.wb = before.clone();
+                        d.calc.rebuild(&d.wb);
+                        Err(e)
+                    }
+                }
+            }
+            None => Ok(()),
+        };
+        self.collab = Some(shared);
+        r
+    }
 }

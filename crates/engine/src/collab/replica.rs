@@ -104,15 +104,19 @@ impl Replica {
             // Snapshot undo would take back other people's edits too (docs/co-editing.md §4).
             return Err(EngineError::Other("Undo isn't available in a shared workbook yet.".into()));
         }
-        let (out, mut op) = run_captured(s, id, params)?;
+        let (out, op) = run_captured(s, id, params)?;
         if !op.is_empty() {
-            let d = s.doc_mut()?;
-            self.retag_new_sheets(d, &mut op);
-            let client_seq = self.next_client_seq;
-            self.next_client_seq += 1;
-            self.buffer.push_back(Pending { client_seq, base: 0, original: op.clone(), current: op });
+            self.local(s.doc_mut()?, op);
         }
         Ok(out)
+    }
+
+    /// Queues `op`, an edit this person just made in `d`, for the others.
+    pub fn local(&mut self, d: &mut DocState, mut op: Op) {
+        self.retag_new_sheets(d, &mut op);
+        let client_seq = self.next_client_seq;
+        self.next_client_seq += 1;
+        self.buffer.push_back(Pending { client_seq, base: 0, original: op.clone(), current: op });
     }
 
     /// The next op to send, if none is waiting for its echo.

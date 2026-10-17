@@ -17,15 +17,31 @@
 //! when this is on, so a parent can tell an older GridCraft that ignores the flag. Without it, a
 //! workbook counts as saved as soon as it's handed over.
 //!
+//! Co-editing (the page runs the session with the server; `collab_msg` checks what it sends):
+//!
+//! - `gridcraft:collab:start` (from the parent): `{ client, seq }`, after `gridcraft:open`: the
+//!   workbook just opened is the shared one as of log position `seq`.
+//! - `gridcraft:collab:entries` (from the parent): `{ json }`, the server's log entries in order
+//!   (JSON text of `collab::Incoming`s).
+//! - `gridcraft:collab:op` (to the parent): `{ json }`, this person's next op for the server
+//!   (`collab::Outgoing`). The next comes once this one is back in the log.
+//! - `gridcraft:collab:checkpoint` (from the parent): `{ id }`; answered with
+//!   `gridcraft:collab:checkpointData { id, seq, name, bytes }`, the shared workbook (without this
+//!   person's unconfirmed edits) as .xlsx and its log position.
+//! - `gridcraft:collab:stop` (from the parent) ends sharing; `gridcraft:collab:error` (to the
+//!   parent) `{ error }` says this copy can't follow the log and must rejoin.
+//!
 //! Only the parent window on the page's own origin is heard or answered. In host mode the page
 //! starts with an empty workbook instead of a sample, and the parent guards leaving the page.
 
 use std::cell::{Cell, RefCell};
+use std::collections::VecDeque;
 use std::rc::Rc;
 
 use gridcraft_ui_egui::{Inbox, Services, SheetApp};
 
 use crate::acks::{Reply, SaveAcks};
+use crate::collab_msg::{self, FromPage};
 use wasm_bindgen::JsCast as _;
 use wasm_bindgen::JsValue;
 use wasm_bindgen::closure::Closure;
@@ -39,6 +55,8 @@ const MAX_AUTHOR_CHARS: usize = 200;
 
 /// The most save answers held between two frames; more are dropped.
 const MAX_REPLIES: usize = 256;
+/// The most co-editing messages held between two frames; past this the page has to rejoin.
+const MAX_COLLAB_QUEUE: usize = 4096;
 
 #[derive(Clone)]
 pub struct Bridge {
@@ -53,6 +71,10 @@ pub struct Bridge {
     acks: Option<Rc<RefCell<SaveAcks>>>,
     /// The parent's answers since the last frame.
     replies: Rc<RefCell<Vec<Reply>>>,
+    /// Co-editing messages from the parent since the last frame, in order.
+    collab: Rc<RefCell<VecDeque<FromPage>>>,
+    /// Asks for another frame when log entries change what's shown.
+    ctx: Rc<RefCell<Option<egui::Context>>>,
 }
 
 impl Bridge {
@@ -66,12 +88,23 @@ impl Bridge {
         }
         let origin = window.location().origin().ok()?;
         let acks = ack.then(Rc::default);
-        Some(Self { window, parent, origin, saved: Rc::default(), reported: Rc::default(), acks, replies: Rc::default() })
+        Some(Self {
+            window,
+            parent,
+            origin,
+            saved: Rc::default(),
+            reported: Rc::default(),
+            acks,
+            replies: Rc::default(),
+            collab: Rc::default(),
+            ctx: Rc::default(),
+        })
     }
 
     /// Send saved and exported files to the parent instead of downloading them, and hear files
     /// from it.
     pub fn connect(&self, services: &mut Services, inbox: Inbox, ctx: egui::Context) {
+        *self.ctx.borrow_mut() = Some(ctx.clone());
         self.listen(inbox, ctx);
         let bridge = self.clone();
         services.download = Some(Box::new(move |name: &str, bytes: &[u8]| {
@@ -90,7 +123,12 @@ impl Bridge {
     }
 
     pub fn post_ready(&self) {
-        self.send(&[("type", "gridcraft:ready".into()), ("version", env!("CARGO_PKG_VERSION").into()), ("ack", self.acks.is_some().into())]);
+        self.send(&[
+            ("type", "gridcraft:ready".into()),
+            ("version", env!("CARGO_PKG_VERSION").into()),
+            ("ack", self.acks.is_some().into()),
+            ("collab", true.into()),
+        ]);
     }
 
     pub fn post_failed(&self, error: &str) {
@@ -121,10 +159,83 @@ impl Bridge {
                 }
             }
         }
+        self.sync_collab(app);
         let dirty = app.session.documents().iter().any(|d| d.is_dirty());
         if self.reported.get() != Some(dirty) && self.send(&[("type", "gridcraft:dirty".into()), ("dirty", dirty.into())]) {
             self.reported.set(Some(dirty));
         }
+    }
+
+    /// Co-editing after each frame: the page's messages in order, then this person's next op.
+    fn sync_collab(&self, app: &mut SheetApp) {
+        let queued: Vec<FromPage> = self.collab.borrow_mut().drain(..).collect();
+        let mut changed = false;
+        for msg in queued {
+            match msg {
+                FromPage::Start { client, seq } => {
+                    if let Err(e) = app.session.collab_start(client, seq) {
+                        self.post_collab_error(&e.to_string());
+                    }
+                }
+                FromPage::Entries(entries) => {
+                    for entry in entries {
+                        if let Err(e) = app.session.collab_receive(entry) {
+                            app.session.collab_stop();
+                            self.post_collab_error(&e.to_string());
+                            break;
+                        }
+                        changed = true;
+                    }
+                }
+                FromPage::Checkpoint { id } => self.post_checkpoint(app, id),
+                FromPage::Stop => app.session.collab_stop(),
+            }
+        }
+        if let Some(out) = app.session.collab_outgoing() {
+            match serde_json::to_string(&out) {
+                Ok(json) => {
+                    self.send(&[("type", "gridcraft:collab:op".into()), ("json", json.into())]);
+                }
+                Err(e) => self.post_collab_error(&e.to_string()),
+            }
+        }
+        if changed && let Some(ctx) = self.ctx.borrow().as_ref() {
+            ctx.request_repaint();
+        }
+    }
+
+    /// The shared workbook, as everyone has it, for the page to save as the session's checkpoint.
+    fn post_checkpoint(&self, app: &SheetApp, id: u64) {
+        let Some((seq, wb)) = app.session.collab_confirmed() else {
+            self.post_collab_error("no shared workbook to save");
+            return;
+        };
+        let name = app.session.active().map(|d| d.display_title()).unwrap_or_else(|| "Book.xlsx".into());
+        let bytes = match gridcraft_engine::io::save_bytes(&wb, &name) {
+            Ok(b) => b,
+            Err(e) => {
+                self.post_collab_error(&format!("couldn't save the shared workbook: {e}"));
+                return;
+            }
+        };
+        let buffer = js_sys::Uint8Array::from(bytes.as_slice()).buffer();
+        let fields = [
+            ("type", "gridcraft:collab:checkpointData".into()),
+            ("id", JsValue::from_f64(id as f64)),
+            ("seq", JsValue::from_f64(seq as f64)),
+            ("name", name.as_str().into()),
+            ("bytes", buffer.clone().into()),
+        ];
+        if let Some(m) = message(&fields)
+            && self.parent.post_message_with_transfer(&m, &self.origin, &js_sys::Array::of1(&buffer)).is_err()
+        {
+            log::error!("couldn't hand the checkpoint to the page");
+        }
+    }
+
+    fn post_collab_error(&self, error: &str) {
+        log::error!("co-editing: {error}");
+        self.send(&[("type", "gridcraft:collab:error".into()), ("error", error.into())]);
     }
 
     fn post_save(&self, path: &str, bytes: &[u8]) -> Result<(), String> {
@@ -160,6 +271,8 @@ impl Bridge {
         let origin = self.origin.clone();
         let acks = self.acks.is_some();
         let replies = self.replies.clone();
+        let collab = self.collab.clone();
+        let bridge = self.clone();
         let on_message = Closure::<dyn FnMut(web_sys::MessageEvent)>::new(move |event: web_sys::MessageEvent| {
             if event.origin() != origin || !event.source().is_some_and(|s| js_sys::Object::is(&s, &parent)) {
                 return;
@@ -170,6 +283,21 @@ impl Bridge {
                 let name = string(&data, "name").filter(|n| !n.trim().is_empty()).unwrap_or_else(|| "Book.xlsx".to_string());
                 let Some(bytes) = bytes(&data) else { return };
                 inbox.lock().unwrap_or_else(|e| e.into_inner()).push((name, bytes));
+                ctx.request_repaint();
+            } else if let Some(msg) =
+                collab_msg::parse(&kind, number(&data, "client"), number(&data, "seq"), string(&data, "json").as_deref(), number(&data, "id"))
+            {
+                match msg {
+                    Ok(msg) => {
+                        let mut queue = collab.borrow_mut();
+                        if queue.len() < MAX_COLLAB_QUEUE {
+                            queue.push_back(msg);
+                        } else {
+                            bridge.post_collab_error("too many messages queued; rejoin");
+                        }
+                    }
+                    Err(e) => bridge.post_collab_error(&e),
+                }
                 ctx.request_repaint();
             } else if acks && let Some(reply) = Reply::parse(&kind, number(&data, "id"), string(&data, "name"), string(&data, "error")) {
                 let mut replies = replies.borrow_mut();

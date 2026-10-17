@@ -1,12 +1,30 @@
 # Real-time co-editing: design
 
-Status: phase 1 (engine foundations) done, 2026-10-17. Fork-specific (Aegean Office). Not
-upstream behaviour.
+Status: phases 1 (engine) and 2 (transport through Nextcloud) done, 2026-10-17. Fork-specific
+(Aegean Office). Not upstream behaviour.
 
 ## Where it stands
 
-Phase 1 is in `crates/engine/src/collab/` and needs no I/O; phases 2–3 (transport, presence,
-collaborative undo) are next.
+Two browsers on one file in Nextcloud co-edit live: typing, formatting and row inserts appear in
+the other within about a second, and the shared workbook is saved back to the file every 20
+edits or 30 seconds (and on Save). Phase 3 (others' selections on the grid, collaborative undo)
+is next.
+
+Phase 2 pieces:
+- **Session hook.** `Session::collab_*` (`crates/engine/src/collab/mod.rs`): every command path
+  (ribbon, keys, drags, agents) is shared through `Session::execute`, which captures the
+  outermost command as one op.
+- **Bridge messages.** `apps/gridcraft-web/src/host.rs` and `collab_msg.rs`; the protocol is in
+  `packaging/web/README.md` § Co-editing.
+- **Sequencer.** In `gridcraft-nextcloud`: `CollabService`, which gives gap-free log positions
+  under a row lock and recognises a retried push, plus `CollabController` and a migration.
+- **Page loop.** `gridcraft-nextcloud/src/collab.js`:
+  - joins pinned to the file's ETag
+  - sends ops in order, with retries
+  - polls for others' entries
+  - the member with the lowest client id writes the checkpoints
+
+Engine pieces from phase 1:
 
 | Piece | Code | Proof |
 |---|---|---|

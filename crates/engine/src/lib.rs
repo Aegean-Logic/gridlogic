@@ -261,6 +261,10 @@ pub struct Session {
     /// Review › Notes › Show All Notes: every note is displayed. An application display setting
     /// (like Excel's comment indicator option), so it's not saved in the file.
     pub show_all_notes: bool,
+    /// Co-editing: the shared document and this person's copy of it ([`collab`]).
+    collab: Option<collab::Shared>,
+    /// How deep in commands-run-by-commands `execute` is; co-editing captures the outermost.
+    exec_depth: u32,
 }
 
 impl Session {
@@ -330,8 +334,22 @@ impl Session {
             return Err(EngineError::Disabled(id.to_string(), why));
         }
         let before = self.active().map(|d| (d.uid, d.wb.clone(), d.selection.clone()));
+        // An edit of the shared document goes to the others too: the outermost command's whole
+        // effect, as one op.
+        let shared = self.exec_depth == 0 && before.as_ref().is_some_and(|(uid, ..)| self.collab.as_ref().is_some_and(|c| c.uid == *uid));
+        if shared {
+            if matches!(id, "edit.undo" | "edit.redo") {
+                // Snapshot undo would take back other people's edits too (docs/co-editing.md §4).
+                return Err(EngineError::Disabled(id.to_string(), "Undo isn't available in a shared workbook yet.".into()));
+            }
+            if let Some(d) = self.active_mut() {
+                d.struct_log.clear();
+            }
+        }
         let params = if params.is_null() { Json::Object(Default::default()) } else { params };
+        self.exec_depth = self.exec_depth.saturating_add(1);
         let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| (spec.run)(self, &params)));
+        self.exec_depth = self.exec_depth.saturating_sub(1);
         let result = match result {
             Ok(r) => r,
             Err(p) => {
@@ -348,6 +366,12 @@ impl Session {
                 return Err(EngineError::Internal(id.to_string(), msg));
             }
         };
+        if shared
+            && result.is_ok()
+            && let Some((uid, wb, _)) = &before
+        {
+            self.share_edit(*uid, wb)?;
+        }
         if spec.journal && result.is_ok() {
             self.journal.push((id.to_string(), cmd::journal_params(&params)));
             if self.journal.len() > 10_000 {

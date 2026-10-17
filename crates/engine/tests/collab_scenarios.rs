@@ -137,3 +137,68 @@ fn undo_is_refused_in_a_shared_workbook() {
     run(&mut ana, "cell.set", json!({"cell": "A1", "input": "2"}));
     assert!(ana.replica.run(&mut ana.session, "edit.undo", json!({})).is_err(), "undo would take back other people's edits");
 }
+
+/// Co-editing through the session itself: every command path (here `Session::run`, as the UI
+/// and agents use it) shares its edits, a command that runs other commands sends one op, and
+/// the two copies end up the same.
+#[test]
+fn a_shared_session_shares_every_edit() {
+    let open = |client: u64| {
+        let mut s = Session::new();
+        s.add_document(DocState::new(Workbook::new(), None, "Shared".into()));
+        for (c, v) in [("A1", "Region"), ("B1", "Sales"), ("A2", "North"), ("B2", "10"), ("A3", "North"), ("B3", "20"), ("A4", "South"), ("B4", "5")]
+        {
+            if let Err(e) = s.run("cell.set", json!({"cell": c, "input": v})) {
+                panic!("{e}");
+            }
+        }
+        if let Err(e) = s.collab_start(client, 0) {
+            panic!("{e}");
+        }
+        s
+    };
+    let (mut ana, mut ben) = (open(1), open(2));
+    for (id, params) in [
+        ("cell.set", json!({"cell": "C1", "input": "Notes"})),
+        // Subtotal inserts rows, sets cells, bolds and groups: one command, one op.
+        ("data.subtotal", json!({"range": "A1:B4", "groupBy": "A", "columns": ["B"]})),
+    ] {
+        if let Err(e) = ana.run(id, params) {
+            panic!("{id}: {e}");
+        }
+    }
+    if let Err(e) = ben.run("cell.set", json!({"cell": "D2", "input": "Ben was here"})) {
+        panic!("{e}");
+    }
+    assert!(ana.run("edit.undo", json!({})).is_err(), "undo is refused while shared");
+    assert!(ben.run("selection.set", json!({"range": "B2"})).is_ok());
+
+    // A server: sequence whatever's sent, deliver to both, until quiet.
+    let mut log: Vec<Incoming> = Vec::new();
+    let mut seen = [0usize; 2];
+    for _ in 0..50 {
+        for s in [&mut ana, &mut ben] {
+            if let Some(out) = s.collab_outgoing() {
+                log.push(Incoming { seq: log.len() as u64 + 1, client: out.client, client_seq: out.client_seq, base: out.base, op: out.op });
+            }
+        }
+        for (i, s) in [&mut ana, &mut ben].into_iter().enumerate() {
+            while let Some(msg) = log.get(seen[i]).cloned() {
+                if let Err(e) = s.collab_receive(msg) {
+                    panic!("{e}");
+                }
+                seen[i] += 1;
+            }
+        }
+        if !ana.collab_pending() && !ben.collab_pending() {
+            break;
+        }
+    }
+    assert_eq!(log.len(), 3, "three edits, three ops (the subtotal's inner commands aren't sent separately)");
+    let (Some((sa, a)), Some((sb, b))) = (ana.collab_confirmed(), ben.collab_confirmed()) else { panic!("not shared") };
+    assert_eq!(sa, sb);
+    let diff = gridcraft_engine::collab::make_patch(&a, &b).unwrap_or_else(|e| panic!("{e}"));
+    assert!(diff.is_empty(), "{diff:?}");
+    let shown = |s: &Session| s.active().map(|d| d.wb.clone()).unwrap_or_default();
+    assert!(gridcraft_engine::collab::make_patch(&shown(&ana), &shown(&ben)).map(|p| p.is_empty()).unwrap_or(false));
+}
