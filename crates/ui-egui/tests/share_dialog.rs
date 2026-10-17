@@ -25,8 +25,8 @@ impl Fake {
         let inbox: CloudInbox = Arc::default();
         let answers = inbox.clone();
         let me = self.clone();
-        Cloud {
-            request: Box::new(move |id, op, params| {
+        Cloud::sharing(
+            Box::new(move |id, op, params| {
                 me.requests.lock().unwrap().push((op.to_string(), params.clone()));
                 let answer = match op {
                     "share.info" => me.info.lock().unwrap().clone(),
@@ -52,7 +52,7 @@ impl Fake {
                 answers.lock().unwrap().push((id, Ok(answer)));
             }),
             inbox,
-        }
+        )
     }
     fn ops(&self) -> Vec<(String, Json)> {
         self.requests.lock().unwrap().clone()

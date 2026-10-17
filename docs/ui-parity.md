@@ -1,6 +1,6 @@
 # UI parity
 
-> **Last reviewed:** 2026-10-10 · **Last updated:** 2026-10-17 · **Change:** minor (Share dialog through Nextcloud) · **Target:** Microsoft Excel (Microsoft 365), Excel for Mac 16.113.4
+> **Last reviewed:** 2026-10-10 · **Last updated:** 2026-10-17 · **Change:** minor (Nextcloud in the File view, AutoSave and sync conflicts) · **Target:** Microsoft Excel (Microsoft 365), Excel for Mac 16.113.4
 
 Interaction, controls and feel, against Excel. Part of [target-app-parity.md](target-app-parity.md).
 **UI/UX fidelity: ~55% ready, 50–80 h** (estimated). Ribbon command coverage is measured
@@ -139,7 +139,11 @@ Seek, Scenario Manager, Data Analysis, Forecast Sheet and others exist. Share (t
 Excel's does with OneDrive, through Nextcloud (`crates/ui-egui/src/share.rs`): people, groups or
 email with Can edit/Can view, a message, Send, Copy link with link settings, and managing access.
 It is in the browser inside Nextcloud and on the desktop after signing in to Nextcloud, which also
-uploads a local workbook first. Missing or partial: Options,
+uploads a local workbook first. On the desktop, File › Account signs in to Nextcloud, and File ›
+Open and Save As browse it (`crates/ui-egui/src/cloud_files.rs`). A workbook there is worked on as
+a local copy that AutoSave (on by default for it, as for OneDrive files) sends back. If someone
+else changed the file meanwhile, a prompt offers Keep both, Use mine or Use Nextcloud's.
+Missing or partial: Options,
 Solver, Power Query editor, Insert Object, Equation editor, Protect/Allow Edit Ranges,
 Workbook Links, Accessibility checker.
 
@@ -165,6 +169,7 @@ scrollbar bugs 2–4 · pixel/feel pass against observed Excel 7–12.
 
 | Date | Change | Summary |
 |---|---|---|
+| 2026-10-17 | minor | Nextcloud in the File view (Account, Open, Save As), AutoSave on by default for Nextcloud workbooks and working in an idle window, sync conflicts resolved by the user's choice |
 | 2026-10-17 | minor | Share dialog like Excel's, through Nextcloud, in the browser and on the desktop (Login Flow sign-in, upload, saves sent back) |
 | 2026-10-12 | minor | The File view's recent list tells when each workbook was last changed, read off the UI thread |
 | 2026-10-13 | minor | Horizontal scrollbar in the sheet tab bar: drag, track click pages, frozen columns excluded from the page (#840) |

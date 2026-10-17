@@ -99,6 +99,22 @@ fn prefs_enabled() -> bool {
     std::env::var_os("GRIDCRAFT_NO_PREFS").is_none()
 }
 
+/// Where copies of Nextcloud workbooks are kept: the system's cache folder, not the settings
+/// folder (which may roam between computers).
+fn cache_dir() -> Option<std::path::PathBuf> {
+    let base = if cfg!(target_os = "macos") {
+        std::env::var_os("HOME").map(|h| std::path::PathBuf::from(h).join("Library/Caches/GridLogic"))
+    } else if cfg!(windows) {
+        std::env::var_os("LOCALAPPDATA").map(|a| std::path::PathBuf::from(a).join("GridLogic"))
+    } else {
+        std::env::var_os("XDG_CACHE_HOME")
+            .map(std::path::PathBuf::from)
+            .or_else(|| std::env::var_os("HOME").map(|h| std::path::PathBuf::from(h).join(".cache")))
+            .map(|c| c.join("gridlogic"))
+    };
+    base.map(|b| b.join("Nextcloud"))
+}
+
 /// Where the log files live: `logs` in the settings folder, next to `ui.json` (see `logging`).
 fn log_dir() -> Option<std::path::PathBuf> {
     Some(config_dir()?.join("logs"))
@@ -306,7 +322,11 @@ fn main() -> eframe::Result<()> {
         session.new_workbook();
     }
     // Nextcloud, as OneDrive is to Excel: the Share dialog's cloud.
-    let nextcloud = nextcloud::Nextcloud::new(config_dir().filter(|_| prefs_enabled()).map(|d| d.join("nextcloud.json")), open_with_system);
+    let nextcloud = nextcloud::Nextcloud::new(
+        config_dir().filter(|_| prefs_enabled()).map(|d| d.join("nextcloud.json")),
+        cache_dir().filter(|_| prefs_enabled()),
+        open_with_system,
+    );
     let mut app = SheetApp::new(session, services(nextcloud.cloud()));
     app.watch_desktop_theme();
     app.after_engine(); // Show warnings from the sample.

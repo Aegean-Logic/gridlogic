@@ -31,9 +31,41 @@ pub type CloudInbox = Arc<Mutex<Vec<(u64, Result<Json, String>)>>>;
 /// - `share.link` `{edit, password?, expiration?}` → the link share (with `url`), made or updated
 /// - `share.upload` `{}` → info: puts a workbook that isn't in the cloud yet there (desktop)
 /// - `account.signIn` `{server}` → info: signs in to the cloud at that address (desktop)
+///
+/// With `files` (the desktop), the File view's operations too ([`crate::cloud_files`]):
+///
+/// - `account.info` `{}` → `{signedIn, account?, server?}`; `account.signOut` `{}` → the same
+/// - `files.list` `{path}` → `{path, items: [{name, path, folder, size}]}`
+/// - `files.open` `{path, openPaths}` → `{localPath, alreadyOpen?}`: a copy here, tied to the
+///   cloud file (open it like any file; saving it saves to the cloud)
+/// - `files.saveAs` `{folder, name, replace}` → `{localPath, name}` (save the workbook there; it
+///   goes to the cloud), or `{exists: true, name}`
 pub struct Cloud {
     pub request: Box<dyn Fn(u64, &str, Json)>,
     pub inbox: CloudInbox,
+    /// The File view can open and save cloud files (account, Open, Save As).
+    pub files: bool,
+    /// The cloud file a local file is the copy of (`folder/name.xlsx`), if it is one: such
+    /// workbooks AutoSave by default.
+    pub location: Option<Box<dyn Fn(&str) -> Option<String>>>,
+}
+
+impl Cloud {
+    /// A cloud for sharing only (the browser's: the page owns the files).
+    pub fn sharing(request: Box<dyn Fn(u64, &str, Json)>, inbox: CloudInbox) -> Cloud {
+        Cloud { request, inbox, files: false, location: None }
+    }
+
+    /// The cloud file `local` is the copy of, if any.
+    pub fn location_of(&self, local: &str) -> Option<String> {
+        self.location.as_ref().and_then(|f| f(local))
+    }
+}
+
+/// A request id no other cloud request in this app uses (answers share one inbox).
+pub fn next_request_id() -> u64 {
+    static NEXT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
+    NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
 }
 
 #[derive(Clone, Debug, Default, Deserialize)]
@@ -114,7 +146,6 @@ pub struct ShareDialog {
     link_password: String,
     link_expiry: String,
     status: Option<(String, bool)>,
-    next_id: u64,
     asked: HashMap<u64, Asked>,
     adding: usize,
 }
@@ -140,7 +171,6 @@ impl ShareDialog {
             link_password: String::new(),
             link_expiry: String::new(),
             status: None,
-            next_id: 1,
             asked: HashMap::new(),
             adding: 0,
         };
@@ -150,8 +180,7 @@ impl ShareDialog {
 
     fn ask(&mut self, app: &SheetApp, op: &str, params: Json, what: Asked) {
         let Some(cloud) = &app.services.cloud else { return };
-        let id = self.next_id;
-        self.next_id += 1;
+        let id = next_request_id();
         self.asked.insert(id, what);
         (cloud.request)(id, op, params);
     }

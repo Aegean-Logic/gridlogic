@@ -31,6 +31,8 @@ arboard = { workspace = true }
 # The system's own certificate store, so company and self-signed CAs the system trusts work.
 ureq = { version = "3", features = ["platform-verifier"] }
 serde = { workspace = true }
+# Nextcloud folder listings (WebDAV PROPFIND answers).
+quick-xml = { workspace = true }
 
 # The Nextcloud app password, in the system's own keychain.
 [target.'cfg(target_os = "windows")'.dependencies.keyring]

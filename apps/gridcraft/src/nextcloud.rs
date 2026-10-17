@@ -1,8 +1,11 @@
 //! Nextcloud for the desktop app, as OneDrive is for Excel: sign in once (Nextcloud's Login Flow
-//! v2, in the browser; the app password goes to the system keychain), upload a workbook to share
-//! it, and the Share dialog's operations ([`gridcraft_ui_egui::share::Cloud`]) through Nextcloud's
-//! sharing API. An uploaded workbook stays connected: saving it on this computer saves it to
-//! Nextcloud too, unless someone changed the Nextcloud copy in the meantime.
+//! v2, in the browser; the app password goes to the system keychain), open and save workbooks in
+//! Nextcloud from the File view, upload a workbook to share it, and the Share dialog's operations
+//! ([`gridcraft_ui_egui::share::Cloud`]) through Nextcloud's sharing API.
+//!
+//! A workbook in Nextcloud is worked on as a copy in this computer's cache folder, tied to the
+//! Nextcloud file: saving the copy (Save, or AutoSave) sends it to Nextcloud, unless someone
+//! changed the Nextcloud file in the meantime. Uploaded workbooks are tied the same way.
 //!
 //! The dialog's requests are queued and picked up by [`Nextcloud::poll`] on the UI thread, which
 //! knows the workbook they are about; the talking happens on worker threads, which answer in the
@@ -65,6 +68,16 @@ struct Remote {
     path: String,
     /// The version last written or read here; saving overwrites only that one.
     etag: Option<String>,
+    /// The local file's modification time (ns since 1970) when it was last in step with
+    /// Nextcloud: a later one is a save still to send, even one made before GridLogic last quit.
+    #[serde(default)]
+    synced: Option<u128>,
+}
+
+/// A file's modification time, in nanoseconds since 1970.
+fn mtime(path: &Path) -> Option<u128> {
+    let t = std::fs::metadata(path).and_then(|m| m.modified()).ok()?;
+    t.duration_since(std::time::UNIX_EPOCH).ok().map(|d| d.as_nanos())
 }
 
 #[derive(Default, Serialize, Deserialize)]
@@ -88,6 +101,34 @@ struct State {
     sending: HashSet<String>,
     /// Messages for the user: (title, text, is a problem).
     notices: Vec<(String, String, bool)>,
+    /// Where copies of Nextcloud files are kept (none: Nextcloud files can't be opened).
+    cache: Option<PathBuf>,
+    /// Local files to send as soon as they're saved (Save As to Nextcloud), and to say so.
+    send_now: Vec<String>,
+    announce: HashSet<String>,
+    /// Local files just written from Nextcloud: their new time isn't an edit.
+    fresh: Vec<String>,
+    /// `nextcloud.json`, written the moment `stored` changes (a change waiting for a frame
+    /// would be lost if GridLogic quit first, and the next save would look like a conflict).
+    store_file: Option<PathBuf>,
+    /// Local files whose Nextcloud file someone else changed: not sent until the user chooses
+    /// what to keep ([`resolve`]); and those not yet put to the user.
+    conflicted: HashSet<String>,
+    conflicts: Vec<(String, String)>,
+}
+
+/// Records that `stored` changed and writes it out (left for the next frame if that fails).
+fn persist(s: &mut State) {
+    s.unsaved = true;
+    let Some(file) = s.store_file.clone() else { return };
+    let Ok(bytes) = serde_json::to_vec_pretty(&s.stored) else { return };
+    if let Some(dir) = file.parent() {
+        let _ = std::fs::create_dir_all(dir);
+    }
+    match std::fs::write(&file, bytes) {
+        Ok(()) => s.unsaved = false,
+        Err(e) => log::warn!("{}: {e}", file.display()),
+    }
 }
 
 /// The workbook a request is about, as the UI thread saw it.
@@ -109,6 +150,9 @@ pub struct Nextcloud {
     /// When local files were last looked at, and their modification times then.
     checked_at: f64,
     modified: HashMap<String, Option<SystemTime>>,
+    /// Each open workbook's saved state (by document uid) when last seen: a change means it was
+    /// just saved, so its file is looked at at once (an idle window draws no frames to wait for).
+    saved_seen: HashMap<u64, usize>,
     open_url: fn(&str),
 }
 
@@ -117,29 +161,36 @@ fn lock(state: &Mutex<State>) -> MutexGuard<'_, State> {
 }
 
 impl Nextcloud {
-    /// `file` is where the account and the uploaded files are remembered; `open_url` opens the
-    /// sign-in page in the browser.
-    pub fn new(file: Option<PathBuf>, open_url: fn(&str)) -> Nextcloud {
+    /// `file` is where the account and the uploaded files are remembered, `cache` where copies of
+    /// Nextcloud files are kept; `open_url` opens the sign-in page in the browser.
+    pub fn new(file: Option<PathBuf>, cache: Option<PathBuf>, open_url: fn(&str)) -> Nextcloud {
         let stored = file.as_deref().and_then(|f| std::fs::read(f).ok()).and_then(|b| serde_json::from_slice(&b).ok()).unwrap_or_default();
         Nextcloud {
             requests: Arc::default(),
             answers: CloudInbox::default(),
-            state: Arc::new(Mutex::new(State { stored, ..State::default() })),
+            state: Arc::new(Mutex::new(State { stored, cache, store_file: file.clone(), ..State::default() })),
             file,
             checked_at: f64::NEG_INFINITY,
             modified: HashMap::new(),
+            saved_seen: HashMap::new(),
             open_url,
         }
     }
 
-    /// The Share dialog's cloud: requests wait for [`Nextcloud::poll`].
+    /// The cloud of the Share dialog and the File view: requests wait for [`Nextcloud::poll`].
     pub fn cloud(&self) -> Cloud {
         let requests = self.requests.clone();
+        let state = self.state.clone();
         Cloud {
             request: Box::new(move |id, op, params| {
                 requests.lock().unwrap_or_else(|e| e.into_inner()).push((id, op.to_string(), params));
             }),
             inbox: self.answers.clone(),
+            files: lock(&self.state).cache.is_some(),
+            location: Some(Box::new(move |local: &str| {
+                let s = lock(&state);
+                tie_key(&s.stored.files, local).and_then(|k| s.stored.files.get(&k)).map(|r| r.path.clone())
+            })),
         }
     }
 
@@ -162,13 +213,32 @@ impl Nextcloud {
                 self.answers.lock().unwrap_or_else(|e| e.into_inner()).push((id, Err(format!("Couldn't start: {e}"))));
             }
         }
+        {
+            let mut s = lock(&self.state);
+            for path in std::mem::take(&mut s.send_now) {
+                // Never looked at: sent once saved.
+                self.modified.insert(path, None);
+            }
+            for path in std::mem::take(&mut s.fresh) {
+                // Looked at afresh: the download isn't an edit.
+                self.modified.remove(&path);
+            }
+        }
+        let mut just_saved = false;
+        for d in app.session.documents() {
+            let stamp = std::sync::Arc::as_ptr(&d.saved) as usize;
+            just_saved |= self.saved_seen.insert(d.uid, stamp).is_some_and(|seen| seen != stamp);
+        }
         let now = ctx.input(|i| i.time);
-        if now - self.checked_at >= SAVE_CHECK_SECONDS {
+        if just_saved || now - self.checked_at >= SAVE_CHECK_SECONDS || !self.modified.values().all(Option::is_some) {
             self.checked_at = now;
             self.send_saved(app, ctx);
         }
         let (notices, unsaved) = {
             let mut s = lock(&self.state);
+            for (local, name) in std::mem::take(&mut s.conflicts) {
+                app.cloud_files.conflicts.push(gridcraft_ui_egui::cloud_files::Conflict { local, name });
+            }
             let unsaved = std::mem::take(&mut s.unsaved).then(|| serde_json::to_vec_pretty(&s.stored).ok()).flatten();
             (std::mem::take(&mut s.notices), unsaved)
         };
@@ -193,7 +263,8 @@ impl Nextcloud {
     fn doc(&self, app: &SheetApp) -> Option<Doc> {
         let d = app.session.active()?;
         let s = lock(&self.state);
-        let remote = d.path.as_ref().and_then(|p| s.stored.files.get(p)).or_else(|| s.unsaved_docs.get(&d.uid)).cloned();
+        let tied = d.path.as_deref().and_then(|p| tie_key(&s.stored.files, p));
+        let remote = tied.and_then(|k| s.stored.files.get(&k)).or_else(|| s.unsaved_docs.get(&d.uid)).cloned();
         let wb = d.wb.clone();
         Some(Doc {
             title: d.display_title(),
@@ -216,21 +287,34 @@ impl Nextcloud {
                 && let Some(remote) = s.unsaved_docs.remove(&d.uid)
             {
                 s.stored.files.insert(path.clone(), remote);
-                s.unsaved = true;
+                persist(&mut s);
                 // Never looked at: send it now.
                 self.modified.insert(path.clone(), None);
             }
         }
         for d in app.session.documents() {
-            let Some(path) = d.path.as_ref() else { continue };
+            // The record's own spelling of the path, whatever spelling the workbook was opened by.
+            let Some(path) = d.path.as_deref().and_then(|p| tie_key(&s.stored.files, p)) else { continue };
+            let path = &path;
             let Some(remote) = s.stored.files.get(path).cloned() else { continue };
             let modified = std::fs::metadata(path).and_then(|m| m.modified()).ok();
             let Some(seen) = self.modified.get(path).copied() else {
-                // First look since the app started: changes made while it wasn't running stay here.
-                self.modified.insert(path.clone(), modified);
+                // First look since the app started (or since it came from Nextcloud): a file saved
+                // after it was last in step is sent; otherwise there's nothing to send.
+                let behind = remote.synced.is_some_and(|synced| mtime(Path::new(path)) != Some(synced));
+                self.modified.insert(path.clone(), if behind { None } else { modified });
+                if behind {
+                    ctx.request_repaint();
+                }
                 continue;
             };
-            if modified.is_none() || modified == seen || d.is_dirty() || s.sending.contains(path) || !same_kind(path, &remote.path) {
+            if modified.is_none()
+                || modified == seen
+                || d.is_dirty()
+                || s.sending.contains(path)
+                || s.conflicted.contains(path)
+                || !same_kind(path, &remote.path)
+            {
                 continue;
             }
             self.modified.insert(path.clone(), modified);
@@ -248,58 +332,188 @@ impl Nextcloud {
     }
 }
 
+/// Whether two spellings name the same file: on Windows, `/` and `\` are the same separator
+/// and case doesn't matter.
+fn same_path(a: &str, b: &str) -> bool {
+    if cfg!(windows) { a.replace('/', "\\").to_lowercase() == b.replace('/', "\\").to_lowercase() } else { a == b }
+}
+
+/// The key a local file is recorded under, however `path` spells it.
+fn tie_key(files: &HashMap<String, Remote>, path: &str) -> Option<String> {
+    if files.contains_key(path) {
+        return Some(path.to_string());
+    }
+    files.keys().find(|k| same_path(k, path)).cloned()
+}
+
 fn is_workbook(path: &str) -> bool {
     matches!(extension(path).as_str(), "xlsx" | "xlsm")
 }
+
+/// What the File view lists and opens from Nextcloud.
+const OPENS: [&str; 7] = ["xlsx", "xlsm", "csv", "tsv", "ods", "xls", "xlsb"];
 
 fn extension(path: &str) -> String {
     Path::new(path).extension().and_then(|e| e.to_str()).unwrap_or("").to_ascii_lowercase()
 }
 
-/// A local file is only ever sent to a Nextcloud file of the same type.
+/// A local file is only ever sent to a Nextcloud file of the same type, one GridLogic saves.
 fn same_kind(local: &str, remote: &str) -> bool {
-    is_workbook(local) && extension(local) == extension(remote)
+    matches!(extension(local).as_str(), "xlsx" | "xlsm" | "csv" | "tsv") && extension(local) == extension(remote)
 }
 
 /// Sends a saved file to its copy in Nextcloud, overwriting only the version last seen here.
 fn send_file(state: &Mutex<State>, path: &str, remote: &Remote) {
     let name = remote.path.rsplit('/').next().unwrap_or(&remote.path).to_string();
+    let mut conflict = false;
     let result = (|| {
         let nc = Connection::open(state)?;
+        let sent_time = mtime(Path::new(path));
         let bytes = std::fs::read(path).map_err(|e| format!("Couldn't read {path}: {e}"))?;
         let mut headers = vec![("Content-Type", "application/octet-stream".to_string())];
-        if let Some(etag) = &remote.etag {
-            headers.push(("If-Match", etag.clone()));
+        // Only over the version last seen here; a new file only if nothing's there yet.
+        match &remote.etag {
+            Some(etag) => headers.push(("If-Match", etag.clone())),
+            None => headers.push(("If-None-Match", "*".to_string())),
         }
-        let r = nc.send("PUT", &nc.dav(&remote.path), &headers, bytes)?;
+        let r = nc.send("PUT", &nc.dav(&remote.path), &headers, bytes.clone())?;
         match r.status {
-            200..=299 => Ok(r.etag),
-            412 => Err(format!(
-                "Someone changed {name} in Nextcloud since you last saved it here. Your changes are saved on this computer; open the Nextcloud copy to bring them together."
-            )),
+            200..=299 => Ok((r.etag, sent_time)),
+            412 if remote.etag.is_none() => {
+                Err(format!("There's already a file called {name} there in Nextcloud. Your workbook is saved on this computer."))
+            }
+            412 => {
+                // Nextcloud has another version. If it's exactly this file (sent before GridLogic
+                // could note it), there's nothing to bring together.
+                let theirs = nc.send("GET", &nc.dav(&remote.path), &[], Vec::new())?;
+                if theirs.status == 200 && theirs.body == bytes {
+                    return Ok((theirs.etag, sent_time));
+                }
+                conflict = true;
+                Err(String::new())
+            }
             404 => Err(format!("{name} isn't in Nextcloud any more. Your changes are saved on this computer.")),
             s => Err(format!("Nextcloud answered {s} while saving {name}. Your changes are saved on this computer.")),
         }
     })();
     let mut s = lock(state);
     match result {
-        Ok(etag) => {
+        Ok((etag, sent_time)) => {
             if let Some(r) = s.stored.files.get_mut(path) {
                 r.etag = etag;
-                s.unsaved = true;
+                r.synced = sent_time;
+                persist(&mut s);
             }
-            s.notices.push((String::new(), "Saved to Nextcloud.".into(), false));
+            // Said after Save As; AutoSave's saves go quietly.
+            if s.announce.remove(path) {
+                s.notices.push((String::new(), format!("Saved to Nextcloud: {}", remote.path), false));
+            }
+        }
+        Err(_) if conflict => {
+            if s.conflicted.insert(path.to_string()) {
+                s.conflicts.push((path.to_string(), name));
+            }
         }
         Err(e) => s.notices.push(("Couldn't save to Nextcloud".into(), e, true)),
     }
 }
 
+/// The user's choice for a conflicted file (`files.resolve`):
+///
+/// - `keepBoth`: their version stays; this one goes next to it under a new name, which the
+///   workbook continues as (`{localPath, saveAs: true, name}`: save the workbook there).
+/// - `mine`: this version replaces theirs (`{name}`).
+/// - `theirs`: this computer's changes go; their version replaces the copy here
+///   (`{localPath, reload: true}`: open it again).
+fn resolve(state: &Mutex<State>, local: &str, choice: &str) -> Result<Json, String> {
+    let local = &tie_key(&lock(state).stored.files, local).ok_or("That workbook isn't tied to Nextcloud any more.")?;
+    let remote = lock(state).stored.files.get(local).cloned().ok_or("That workbook isn't tied to Nextcloud any more.")?;
+    let name = remote.path.rsplit('/').next().unwrap_or(&remote.path).to_string();
+    let nc = Connection::open(state)?;
+    let answer = match choice {
+        "mine" => {
+            let sent_time = mtime(Path::new(local));
+            let bytes = std::fs::read(local).map_err(|e| format!("Couldn't read {local}: {e}"))?;
+            let r = nc.send("PUT", &nc.dav(&remote.path), &[("Content-Type", "application/octet-stream".to_string())], bytes)?;
+            if !(200..300).contains(&r.status) {
+                return Err(format!("Nextcloud answered {} while saving {name}.", r.status));
+            }
+            let mut s = lock(state);
+            if let Some(t) = s.stored.files.get_mut(local) {
+                t.etag = r.etag;
+                t.synced = sent_time;
+            }
+            persist(&mut s);
+            json!({"name": name})
+        }
+        "theirs" => {
+            let r = nc.send("GET", &nc.dav(&remote.path), &[], Vec::new())?;
+            if r.status != 200 {
+                return Err(format!("Nextcloud answered {} while fetching {name}.", r.status));
+            }
+            std::fs::write(local, &r.body).map_err(|e| format!("Couldn't write {local}: {e}"))?;
+            let mut s = lock(state);
+            if let Some(t) = s.stored.files.get_mut(local) {
+                t.etag = r.etag;
+                t.synced = mtime(Path::new(local));
+            }
+            s.fresh.push(local.to_string());
+            persist(&mut s);
+            json!({"localPath": local, "reload": true})
+        }
+        "keepBoth" => {
+            let (folder, file) = remote.path.rsplit_once('/').unwrap_or(("", &remote.path));
+            let (stem, ext) = file.rsplit_once('.').unwrap_or((file, "xlsx"));
+            let mut target = None;
+            for n in 1..=50 {
+                let candidate = if n == 1 { format!("{stem} (copy).{ext}") } else { format!("{stem} (copy {n}).{ext}") };
+                let there = save_as_target(state, folder, &candidate, false)?;
+                if there.get("exists").and_then(Json::as_bool) != Some(true) {
+                    target = Some(there);
+                    break;
+                }
+            }
+            let mut there = target.ok_or_else(|| format!("{folder} in Nextcloud already has copies of {name}; rename this workbook first."))?;
+            // The copy here no longer stands for their file: the next open fetches theirs.
+            let mut s = lock(state);
+            s.stored.files.remove(local);
+            persist(&mut s);
+            drop(s);
+            let _ = std::fs::remove_file(local);
+            there["saveAs"] = json!(true);
+            there
+        }
+        other => return Err(format!("Unknown choice “{other}”.")),
+    };
+    lock(state).conflicted.remove(local);
+    Ok(answer)
+}
+
 /// Carries out one of the dialog's operations.
 fn run(state: &Mutex<State>, op: &str, params: &Json, doc: Option<Doc>, open_url: fn(&str)) -> Result<Json, String> {
-    if op == "account.signIn" {
-        let server = params.get("server").and_then(Json::as_str).unwrap_or("");
-        sign_in(state, server, open_url)?;
-        return info(state, doc.as_ref());
+    let text = |k: &str| params.get(k).and_then(Json::as_str).unwrap_or("").to_string();
+    match op {
+        "account.signIn" => {
+            sign_in(state, &text("server"), open_url)?;
+            return info(state, doc.as_ref());
+        }
+        "account.info" => return Ok(account_info(state)),
+        "account.signOut" => {
+            sign_out(state);
+            return Ok(account_info(state));
+        }
+        "files.list" => return list_files(state, &text("path")),
+        "files.open" => {
+            let open: Vec<String> =
+                params.get("openPaths").and_then(Json::as_array).into_iter().flatten().filter_map(Json::as_str).map(str::to_string).collect();
+            return open_file(state, &text("path"), &open);
+        }
+        "files.resolve" => return resolve(state, &text("localPath"), &text("choice")),
+        "files.saveAs" => {
+            let replace = params.get("replace").and_then(Json::as_bool).unwrap_or(false);
+            return save_as_target(state, &text("folder"), &text("name"), replace);
+        }
+        _ => {}
     }
     let doc = doc.ok_or("There's no workbook open.")?;
     match op {
@@ -314,6 +528,239 @@ fn run(state: &Mutex<State>, op: &str, params: &Json, doc: Option<Doc>, open_url
             share_op(&nc, op, params, &format!("/{}", remote.path))
         }
     }
+}
+
+/// `{signedIn, account?, server?}` for the File view.
+fn account_info(state: &Mutex<State>) -> Json {
+    let account = lock(state).stored.account.clone();
+    json!({
+        "signedIn": account.is_some(),
+        "account": account.as_ref().map(Account::shown),
+        "server": account.as_ref().map(|a| a.server.clone()),
+    })
+}
+
+/// Forgets the account, its password (from the keychain too) and which files were Nextcloud's.
+fn sign_out(state: &Mutex<State>) {
+    let mut s = lock(state);
+    if let Some(old) = s.stored.account.take()
+        && let Ok(entry) = old.keychain()
+    {
+        let _ = entry.delete_credential();
+    }
+    s.password = None;
+    s.stored.files.clear();
+    s.unsaved_docs.clear();
+    persist(&mut s);
+}
+
+/// A folder in Nextcloud: `{path, items: [{name, path, folder, size}]}`, folders first, then the
+/// spreadsheets GridLogic opens.
+fn list_files(state: &Mutex<State>, path: &str) -> Result<Json, String> {
+    let nc = Connection::open(state)?;
+    let path = path.trim_matches('/');
+    let body = r#"<?xml version="1.0"?><d:propfind xmlns:d="DAV:"><d:prop><d:resourcetype/><d:getcontentlength/></d:prop></d:propfind>"#;
+    let headers = [("Depth", "1".to_string()), ("Content-Type", "application/xml".to_string())];
+    let r = nc.send("PROPFIND", &nc.dav(path), &headers, body.as_bytes().to_vec())?;
+    match r.status {
+        207 => {}
+        404 => return Err("That folder isn't in Nextcloud any more.".into()),
+        s => return Err(format!("Nextcloud answered {s} while listing the folder.")),
+    }
+    let base = url_path(&nc.dav(""));
+    let mut items: Vec<(bool, String, Json)> = Vec::new();
+    for entry in dav_entries(&r.body) {
+        let Some(rel) = decode(&entry.href).strip_prefix(&decode(&base)).map(|p| p.trim_matches('/').to_string()) else { continue };
+        if rel == path || rel.is_empty() {
+            continue;
+        }
+        let name = rel.rsplit('/').next().unwrap_or(&rel).to_string();
+        if name.starts_with('.') || (!entry.folder && !OPENS.contains(&extension(&name).as_str())) {
+            continue;
+        }
+        items.push((entry.folder, name.to_lowercase(), json!({"name": name, "path": rel, "folder": entry.folder, "size": entry.size})));
+    }
+    items.sort_by(|a, b| b.0.cmp(&a.0).then_with(|| a.1.cmp(&b.1)));
+    Ok(json!({"path": path, "items": items.into_iter().map(|(_, _, j)| j).collect::<Vec<_>>()}))
+}
+
+struct DavEntry {
+    href: String,
+    folder: bool,
+    size: u64,
+}
+
+/// The entries of a PROPFIND answer.
+fn dav_entries(xml: &[u8]) -> Vec<DavEntry> {
+    use quick_xml::events::Event;
+    let mut reader = quick_xml::Reader::from_reader(xml);
+    let mut out = Vec::new();
+    let mut current: Option<DavEntry> = None;
+    let mut field = String::new();
+    let mut buf = Vec::new();
+    loop {
+        match reader.read_event_into(&mut buf) {
+            Ok(Event::Start(e)) => {
+                let name = String::from_utf8_lossy(e.local_name().as_ref()).to_string();
+                match name.as_str() {
+                    "response" => current = Some(DavEntry { href: String::new(), folder: false, size: 0 }),
+                    "collection" => {
+                        if let Some(c) = current.as_mut() {
+                            c.folder = true;
+                        }
+                    }
+                    _ => {}
+                }
+                field = name;
+            }
+            Ok(Event::Empty(e)) => {
+                if e.local_name().as_ref() == b"collection"
+                    && let Some(c) = current.as_mut()
+                {
+                    c.folder = true;
+                }
+            }
+            Ok(Event::Text(e)) => {
+                let text = e.decode().map(|t| t.to_string()).unwrap_or_default();
+                if let Some(c) = current.as_mut() {
+                    match field.as_str() {
+                        "href" => c.href.push_str(&text),
+                        "getcontentlength" => c.size = text.trim().parse().unwrap_or(0),
+                        _ => {}
+                    }
+                }
+            }
+            Ok(Event::End(e)) => {
+                if e.local_name().as_ref() == b"response"
+                    && let Some(c) = current.take()
+                {
+                    out.push(c);
+                }
+                field.clear();
+            }
+            Ok(Event::Eof) | Err(_) => break,
+            _ => {}
+        }
+        buf.clear();
+    }
+    out
+}
+
+/// The path part of a URL (`https://host/a/b` → `/a/b`).
+fn url_path(url: &str) -> String {
+    let rest = url.split("://").nth(1).unwrap_or(url);
+    rest.find('/').map(|i| rest[i..].to_string()).unwrap_or_else(|| "/".into())
+}
+
+/// Undoes percent-encoding (bytes that don't make UTF-8 become U+FFFD).
+fn decode(s: &str) -> String {
+    let b = s.as_bytes();
+    let mut out = Vec::with_capacity(b.len());
+    let mut i = 0;
+    while i < b.len() {
+        let hex = |c: u8| (c as char).to_digit(16);
+        if b[i] == b'%'
+            && let (Some(h), Some(l)) = (b.get(i + 1).copied().and_then(hex), b.get(i + 2).copied().and_then(hex))
+        {
+            out.push((h * 16 + l) as u8);
+            i += 3;
+        } else {
+            out.push(b[i]);
+            i += 1;
+        }
+    }
+    String::from_utf8_lossy(&out).into_owned()
+}
+
+/// Where the copy of a Nextcloud file lives on this computer: the cache folder, then the server,
+/// the user and the file's own path, each name made safe for any file system.
+fn cache_path(state: &Mutex<State>, remote: &str) -> Result<PathBuf, String> {
+    let s = lock(state);
+    let cache = s.cache.clone().ok_or("Nextcloud files can't be opened here.")?;
+    let account = s.stored.account.clone().ok_or("Sign in to Nextcloud first.")?;
+    let host = account.server.split("://").nth(1).unwrap_or(&account.server).to_string();
+    let mut path = cache.join(safe_name(&host)).join(safe_name(&account.user));
+    for part in remote.split('/').filter(|p| !p.is_empty()) {
+        path.push(safe_name(part));
+    }
+    Ok(path)
+}
+
+/// A file or folder name any system accepts: no separators, reserved characters, trailing dots
+/// or spaces, and never `.` or `..`.
+fn safe_name(name: &str) -> String {
+    let cleaned: String = name.chars().map(|c| if c.is_control() || "<>:\"/\\|?*".contains(c) { '_' } else { c }).collect();
+    let cleaned = cleaned.trim_end_matches(['.', ' ']).to_string();
+    if cleaned.is_empty() || cleaned == "." || cleaned == ".." { "_".into() } else { cleaned }
+}
+
+/// Opens a Nextcloud file: downloads it to its copy here and ties the two. `{localPath}`, with
+/// `alreadyOpen` when the copy is open already (it's left as it is).
+fn open_file(state: &Mutex<State>, remote: &str, open: &[String]) -> Result<Json, String> {
+    let remote = remote.trim_matches('/').to_string();
+    let local = cache_path(state, &remote)?;
+    let local_text = local.to_string_lossy().to_string();
+    if open.contains(&local_text) {
+        return Ok(json!({"localPath": local_text, "alreadyOpen": true}));
+    }
+    // A copy with changes not yet sent (saved just before quitting, or offline) isn't
+    // overwritten: it opens as it is and is sent (over the version it came from only).
+    {
+        let mut s = lock(state);
+        let behind = s.stored.files.get(&local_text).filter(|r| r.path == remote).is_some_and(|r| local.exists() && r.synced != mtime(&local));
+        if behind {
+            s.send_now.push(local_text.clone());
+            return Ok(json!({"localPath": local_text, "unsent": true}));
+        }
+    }
+    let nc = Connection::open(state)?;
+    let r = nc.send("GET", &nc.dav(&remote), &[], Vec::new())?;
+    match r.status {
+        200 => {}
+        404 => return Err("That file isn't in Nextcloud any more.".into()),
+        s => return Err(format!("Nextcloud answered {s} while opening the file.")),
+    }
+    if let Some(dir) = local.parent() {
+        std::fs::create_dir_all(dir).map_err(|e| format!("Couldn't make {}: {e}", dir.display()))?;
+    }
+    std::fs::write(&local, &r.body).map_err(|e| format!("Couldn't write {}: {e}", local.display()))?;
+    let mut s = lock(state);
+    s.stored.files.insert(local_text.clone(), Remote { path: remote, etag: r.etag, synced: mtime(&local) });
+    s.fresh.push(local_text.clone());
+    persist(&mut s);
+    Ok(json!({"localPath": local_text}))
+}
+
+/// Save As in Nextcloud: where to save the workbook here (`{localPath}`), tied to `folder/name`
+/// in Nextcloud and sent as soon as it's saved. `{exists: true}` when there's a file of that name
+/// already and `replace` wasn't asked for.
+fn save_as_target(state: &Mutex<State>, folder: &str, name: &str, replace: bool) -> Result<Json, String> {
+    let name = name.trim();
+    if name.is_empty() || name.contains(['/', '\\']) || name.starts_with('.') {
+        return Err("Type a name for the workbook (no slashes).".into());
+    }
+    let name = if is_workbook(name) { name.to_string() } else { format!("{name}.xlsx") };
+    let folder = folder.trim_matches('/');
+    let remote = if folder.is_empty() { name.clone() } else { format!("{folder}/{name}") };
+    let nc = Connection::open(state)?;
+    let there = nc.send("HEAD", &nc.dav(&remote), &[], Vec::new())?;
+    let etag = match there.status {
+        200 if !replace => return Ok(json!({"exists": true, "name": name})),
+        200 => there.etag,
+        404 => None,
+        s => return Err(format!("Nextcloud answered {s} while checking the folder.")),
+    };
+    let local = cache_path(state, &remote)?;
+    if let Some(dir) = local.parent() {
+        std::fs::create_dir_all(dir).map_err(|e| format!("Couldn't make {}: {e}", dir.display()))?;
+    }
+    let local_text = local.to_string_lossy().to_string();
+    let mut s = lock(state);
+    s.stored.files.insert(local_text.clone(), Remote { path: remote, etag, synced: None });
+    s.send_now.push(local_text.clone());
+    s.announce.insert(local_text.clone());
+    persist(&mut s);
+    Ok(json!({"localPath": local_text, "name": name}))
 }
 
 /// `{name, signedIn, inCloud, canShare, account?, server?}` for the dialog.
@@ -399,7 +846,7 @@ fn sign_in(state: &Mutex<State>, typed: &str, open_url: fn(&str)) -> Result<(), 
         }
     }
     s.password = Some(password);
-    s.unsaved = true;
+    persist(&mut s);
     Ok(())
 }
 
@@ -460,12 +907,13 @@ fn upload(state: &Mutex<State>, doc: Doc) -> Result<String, String> {
         match r.status {
             412 => continue,
             200..=299 => {
-                let remote = Remote { path, etag: r.etag };
+                let synced = doc.path.as_deref().filter(|p| is_workbook(p)).and_then(|p| mtime(Path::new(p)));
+                let remote = Remote { path, etag: r.etag, synced };
                 let mut s = lock(state);
                 match doc.path.filter(|p| is_workbook(p)) {
                     Some(local) => {
                         s.stored.files.insert(local, remote);
-                        s.unsaved = true;
+                        persist(&mut s);
                     }
                     None => {
                         s.unsaved_docs.insert(doc.uid, remote);
@@ -644,7 +1092,7 @@ fn call(http: &ureq::Agent, method: &str, url: &str, headers: &[(&str, String)],
     for (k, v) in headers {
         b = b.header(*k, v.as_str());
     }
-    let sent = if body.is_empty() && matches!(method, "GET" | "DELETE" | "PROPFIND" | "MKCOL") {
+    let sent = if body.is_empty() && matches!(method, "GET" | "HEAD" | "DELETE" | "PROPFIND" | "MKCOL") {
         http.run(b.body(()).map_err(|e| e.to_string())?)
     } else {
         http.run(b.body(body).map_err(|e| e.to_string())?)
@@ -808,6 +1256,39 @@ mod tests {
         assert!(same_kind("C:/x/Budget.xlsx", "GridLogic/Budget.xlsx"));
         assert!(!same_kind("C:/x/Budget.csv", "GridLogic/Budget.xlsx"));
         assert!(!same_kind("C:/x/Budget.xlsm", "GridLogic/Budget.xlsx"));
+        assert!(!same_kind("C:/x/Budget.ods", "GridLogic/Budget.ods"), "GridLogic doesn't write .ods");
         assert_eq!(encode("a b/ü"), "a%20b%2F%C3%BC");
+        assert_eq!(decode("a%20b%2F%C3%BC"), "a b/ü");
+    }
+
+    #[test]
+    fn records_match_any_spelling_of_a_path() {
+        let mut files = HashMap::new();
+        files.insert(r"C:\Cache\Sales.xlsx".to_string(), Remote { path: "Sales.xlsx".into(), etag: None, synced: None });
+        assert_eq!(tie_key(&files, r"C:\Cache\Sales.xlsx").as_deref(), Some(r"C:\Cache\Sales.xlsx"));
+        let other = tie_key(&files, "c:/cache/Sales.xlsx");
+        if cfg!(windows) {
+            assert_eq!(other.as_deref(), Some(r"C:\Cache\Sales.xlsx"));
+        } else {
+            assert_eq!(other, None);
+        }
+    }
+
+    #[test]
+    fn folder_listings_read() {
+        let xml = br#"<?xml version="1.0"?><d:multistatus xmlns:d="DAV:"><d:response><d:href>/remote.php/dav/files/ana/Docs/</d:href><d:propstat><d:prop><d:resourcetype><d:collection/></d:resourcetype></d:prop></d:propstat></d:response><d:response><d:href>/remote.php/dav/files/ana/Docs/Q3%20Budget.xlsx</d:href><d:propstat><d:prop><d:resourcetype/><d:getcontentlength>5271</d:getcontentlength></d:prop></d:propstat></d:response></d:multistatus>"#;
+        let e = dav_entries(xml);
+        assert_eq!(e.len(), 2);
+        assert!(e[0].folder && !e[1].folder);
+        assert_eq!((decode(&e[1].href), e[1].size), ("/remote.php/dav/files/ana/Docs/Q3 Budget.xlsx".to_string(), 5271));
+        assert_eq!(url_path("https://cloud.example/nc/remote.php/dav/files/ana/"), "/nc/remote.php/dav/files/ana/");
+    }
+
+    #[test]
+    fn cache_names_are_safe() {
+        assert_eq!(safe_name("a:b*c?.xlsx"), "a_b_c_.xlsx");
+        assert_eq!(safe_name(".."), "_");
+        assert_eq!(safe_name("Report. "), "Report");
+        assert_eq!(safe_name("localhost:8080"), "localhost_8080");
     }
 }

@@ -23,7 +23,7 @@ use crate::theme::{self, Tokens};
 /// Width of the navigation column.
 const NAV_W: f32 = 196.0;
 /// Width of the content column (pages are left-aligned like a document, not stretched).
-const CONTENT_W: f32 = 760.0;
+pub(crate) const CONTENT_W: f32 = 760.0;
 
 /// A Backstage page.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -35,11 +35,13 @@ pub enum Page {
     SaveAs,
     Print,
     Export,
+    /// Signing in to Nextcloud (desktop).
+    Account,
     Options,
 }
 
 impl Page {
-    pub const ALL: [Page; 8] = [Page::Home, Page::New, Page::Open, Page::Info, Page::SaveAs, Page::Print, Page::Export, Page::Options];
+    pub const ALL: [Page; 9] = [Page::Home, Page::New, Page::Open, Page::Info, Page::SaveAs, Page::Print, Page::Export, Page::Account, Page::Options];
 
     /// The id `ui.backstage` and `ui.dialog {"name": "backstage", "page": …}` take.
     pub fn id(self) -> &'static str {
@@ -51,6 +53,7 @@ impl Page {
             Page::SaveAs => "saveAs",
             Page::Print => "print",
             Page::Export => "export",
+            Page::Account => "account",
             Page::Options => "options",
         }
     }
@@ -70,6 +73,7 @@ impl Page {
             Page::SaveAs => "Save As",
             Page::Print => "Print",
             Page::Export => "Export",
+            Page::Account => "Account",
             Page::Options => "Options",
         }
     }
@@ -83,6 +87,7 @@ impl Page {
             Page::SaveAs => Icon::Save,
             Page::Print => Icon::Print,
             Page::Export => Icon::Share,
+            Page::Account => Icon::Link,
             Page::Options => Icon::Settings,
         }
     }
@@ -190,9 +195,14 @@ pub fn show(app: &mut SheetApp, ui: &mut Ui) {
                     out.close = true;
                 }
             }
+            let cloud = crate::cloud_files::available(app);
             ui.with_layout(egui::Layout::bottom_up(egui::Align::Min), |ui| {
                 if nav_item(ui, Page::Options.icon(), lang.tr("Options"), bs.page == Page::Options, nav_text, nav_sel).clicked() {
                     out.page = Some(Page::Options);
+                }
+                // Nextcloud's account, where files can be opened and saved there (desktop).
+                if cloud && nav_item(ui, Page::Account.icon(), lang.tr("Account"), bs.page == Page::Account, nav_text, nav_sel).clicked() {
+                    out.page = Some(Page::Account);
                 }
             });
         });
@@ -210,6 +220,7 @@ pub fn show(app: &mut SheetApp, ui: &mut Ui) {
                     Page::SaveAs => save_as(app, ui, &mut bs, &mut out),
                     Page::Print => print(app, ui, &mut bs, &mut out),
                     Page::Export => export(app, ui, &mut out),
+                    Page::Account => crate::cloud_files::account_page(app, ui),
                     Page::Options => options(app, ui),
                 }
             });
@@ -562,6 +573,13 @@ fn open_page(app: &mut SheetApp, ui: &mut Ui, bs: &mut Backstage, out: &mut Outc
             out.close = true;
         }
     }
+    if crate::cloud_files::available(app) {
+        ui.add_space(22.0);
+        section(ui, lang, "Nextcloud");
+        if crate::cloud_files::open_section(app, ui) {
+            out.page = Some(Page::Account);
+        }
+    }
     ui.add_space(22.0);
     section(ui, lang, "Recent");
     recent_list(app, ui, bs, out, usize::MAX);
@@ -589,7 +607,8 @@ fn info(app: &mut SheetApp, ui: &mut Ui, bs: &mut Backstage) {
         return;
     };
     let title = d.display_title();
-    let path = d.path.clone();
+    // A copy of a Nextcloud file shows where it is in Nextcloud.
+    let path = app.cloud_location().map(|p| format!("Nextcloud › {p}")).or_else(|| d.path.clone());
     let sheets = d.wb.sheets.len();
     let protected = d.wb.protected_structure;
     let current: Vec<String> = {
@@ -686,6 +705,13 @@ fn save_as(app: &mut SheetApp, ui: &mut Ui, bs: &mut Backstage, out: &mut Outcom
     }
     ui.add_space(18.0);
     dim(ui, lang.tr("A CSV file, web page or PDF is a copy: the workbook keeps its own file."));
+    if fmt == "xlsx" && crate::cloud_files::available(app) {
+        ui.add_space(22.0);
+        section(ui, lang, "Nextcloud");
+        if crate::cloud_files::save_as_section(app, ui) {
+            out.page = Some(Page::Account);
+        }
+    }
 }
 
 fn print(app: &mut SheetApp, ui: &mut Ui, bs: &mut Backstage, out: &mut Outcome) {
@@ -1076,7 +1102,8 @@ mod tests {
             assert_eq!(Page::parse(page.id()), Some(page));
         }
         assert_eq!(Page::parse(" SAVEAS "), Some(Page::SaveAs));
-        assert_eq!(Page::parse("account"), None);
+        assert_eq!(Page::parse("account"), Some(Page::Account));
+        assert_eq!(Page::parse("feedback"), None);
         assert_eq!(Page::parse(""), None);
     }
 

@@ -131,8 +131,8 @@ impl Bridge {
         self.listen(inbox, answers.clone(), ctx);
         // The Share dialog's cloud: the page, which has the user's Nextcloud session.
         let bridge = self.clone();
-        services.cloud = Some(Cloud {
-            request: Box::new(move |id, op, params| {
+        services.cloud = Some(Cloud::sharing(
+            Box::new(move |id, op, params| {
                 let params = params.to_string();
                 bridge.send(&[
                     ("type", "gridcraft:cloud".into()),
@@ -141,8 +141,8 @@ impl Bridge {
                     ("params", params.as_str().into()),
                 ]);
             }),
-            inbox: answers,
-        });
+            answers,
+        ));
         let bridge = self.clone();
         services.download = Some(Box::new(move |name: &str, bytes: &[u8]| {
             if let Err(e) = bridge.post_save(name, bytes) {

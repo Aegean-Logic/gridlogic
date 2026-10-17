@@ -122,7 +122,7 @@ fn file_options_opens_the_options_page_and_pages_are_reachable_by_command() {
         h.run_steps(2);
         assert_eq!(page(&h), Some(id));
     }
-    assert!(h.state_mut().run("ui.backstage", serde_json::json!({"page": "account"})).is_err());
+    assert!(h.state_mut().run("ui.backstage", serde_json::json!({"page": "feedback"})).is_err());
     h.state_mut().run("ui.backstage", serde_json::json!({"page": "close"})).unwrap();
     assert!(h.state().backstage.is_none());
     // The back arrow returns to the sheet too.

@@ -10,6 +10,7 @@ pub mod backstage;
 mod border_preview;
 mod cell_pictures;
 pub mod chartview;
+pub mod cloud_files;
 pub mod control;
 pub mod credits;
 pub mod dialogs;
@@ -232,6 +233,11 @@ pub struct SheetApp {
     pub dialog: Option<dialogs::Dialog>,
     /// The Share dialog, when open.
     pub share: Option<share::ShareDialog>,
+    /// Nextcloud in the File view (account, Open, Save As).
+    pub cloud_files: cloud_files::CloudFiles,
+    /// Workbooks in Nextcloud (by document uid) whose AutoSave was switched off; it's on for
+    /// the others, as in Excel for workbooks in OneDrive.
+    pub cloud_autosave_off: std::collections::HashSet<u64>,
     /// The File tab's Backstage view, when open (UI-only; replaces the ribbon, grid and tabs).
     pub backstage: Option<backstage::Backstage>,
     pub message: Option<(String, String)>,
@@ -293,6 +299,8 @@ impl SheetApp {
             text_box_editor: None,
             dialog: None,
             share: None,
+            cloud_files: Default::default(),
+            cloud_autosave_off: Default::default(),
             backstage: None,
             message: None,
             presence: Vec::new(),
@@ -670,7 +678,7 @@ impl SheetApp {
                         Some(page) => self.open_backstage(page),
                         None => {
                             return Some(Err(format!(
-                                "unknown File page {id:?} (use home, new, open, info, saveAs, print, export, options or close)"
+                                "unknown File page {id:?} (use home, new, open, info, saveAs, print, export, account, options or close)"
                             )));
                         }
                     },
@@ -785,6 +793,35 @@ impl SheetApp {
         match &mut self.backstage {
             Some(b) => b.page = page,
             None => self.backstage = Some(backstage::Backstage::new(page)),
+        }
+    }
+
+    /// Where the active workbook is in Nextcloud (`folder/name.xlsx`), when it's a copy of a
+    /// Nextcloud file.
+    pub fn cloud_location(&self) -> Option<String> {
+        let path = self.session.active()?.path.clone()?;
+        self.services.cloud.as_ref()?.location_of(&path)
+    }
+
+    /// Whether AutoSave is on for the active workbook: by default for workbooks in Nextcloud,
+    /// and for the others when the AutoSave option is on.
+    pub fn autosave_on(&self) -> bool {
+        match self.session.active() {
+            Some(d) if self.cloud_location().is_some() => !self.cloud_autosave_off.contains(&d.uid),
+            _ => self.grid.autosave(),
+        }
+    }
+
+    /// The title bar's AutoSave switch: for a workbook in Nextcloud, that workbook's; otherwise
+    /// the AutoSave option.
+    pub fn toggle_autosave(&mut self) {
+        match self.session.active().map(|d| d.uid) {
+            Some(uid) if self.cloud_location().is_some() => {
+                if !self.cloud_autosave_off.remove(&uid) {
+                    self.cloud_autosave_off.insert(uid);
+                }
+            }
+            _ => self.grid.toggle_autosave(),
         }
     }
 
@@ -1157,6 +1194,7 @@ impl SheetApp {
         }
         dialogs::show(self, &ctx);
         share::show(self, &ctx);
+        cloud_files::show_conflict(self, &ctx);
         widgets::message_box(self, &ctx);
         widgets::toast(self, &ctx);
         control::issue_screenshots(self, &ctx);
@@ -1173,16 +1211,29 @@ impl SheetApp {
             }
         }
         self.perf.last = now;
-        // AutoSave: save workbooks that have a file shortly after they change.
-        if self.grid.autosave
+        // The File view's Nextcloud requests: answers open or save workbooks.
+        cloud_files::poll(self);
+        // AutoSave: save workbooks that have a file shortly after they change (a workbook in
+        // Nextcloud goes there too).
+        let in_cloud = self.cloud_location().is_some();
+        if self.autosave_on() && self.session.active().is_some_and(|d| d.is_dirty()) {
+            // Come back to save even if nothing else draws a frame by then.
+            ctx.request_repaint_after(std::time::Duration::from_millis(2100));
+        }
+        if self.autosave_on()
             && self.editor.is_none()
             && self.text_box_editor.is_none()
             && now - self.grid.last_autosave > 2000.0
-            && self.session.active().is_some_and(|d| d.is_dirty() && d.path.as_deref().is_some_and(|p| p.ends_with(".xlsx")))
+            && self
+                .session
+                .active()
+                .is_some_and(|d| d.is_dirty() && d.path.as_deref().is_some_and(|p| p.ends_with(".xlsx") || (in_cloud && p.ends_with(".xlsm"))))
         {
             self.grid.last_autosave = now;
             self.store_view_state();
             let _ = self.session.run("file.save", json!({}));
+            // One more frame: the host may have more to do with the saved file (Nextcloud).
+            ctx.request_repaint();
         }
         // Window title.
         if let Some(d) = self.session.active() {
