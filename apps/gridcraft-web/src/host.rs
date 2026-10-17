@@ -19,7 +19,7 @@
 //!
 //! Co-editing (the page runs the session with the server; `collab_msg` checks what it sends):
 //!
-//! - `gridcraft:collab:start` (from the parent): `{ client, seq }`, after `gridcraft:open`: the
+//! - `gridcraft:collab:start` (from the parent): `{ client, seq, readOnly? }`, after `gridcraft:open`: the
 //!   workbook just opened is the shared one as of log position `seq`.
 //! - `gridcraft:collab:entries` (from the parent): `{ json }`, the server's log entries in order
 //!   (JSON text of `collab::Incoming`s).
@@ -200,11 +200,10 @@ impl Bridge {
         let mut changed = false;
         for msg in queued {
             match msg {
-                FromPage::Start { client, seq } => {
-                    if let Err(e) = app.session.collab_start(client, seq) {
-                        self.post_collab_error(&e.to_string());
-                    }
-                }
+                FromPage::Start { client, seq, read_only } => match app.session.collab_start(client, seq) {
+                    Ok(()) => app.session.collab_set_read_only(read_only),
+                    Err(e) => self.post_collab_error(&e.to_string()),
+                },
                 FromPage::Entries(entries) => {
                     for entry in entries {
                         if let Err(e) = app.session.collab_receive(entry) {
@@ -347,9 +346,14 @@ impl Bridge {
                 let Some(bytes) = bytes(&data) else { return };
                 inbox.lock().unwrap_or_else(|e| e.into_inner()).push((name, bytes));
                 ctx.request_repaint();
-            } else if let Some(msg) =
-                collab_msg::parse(&kind, number(&data, "client"), number(&data, "seq"), string(&data, "json").as_deref(), number(&data, "id"))
-            {
+            } else if let Some(msg) = collab_msg::parse(
+                &kind,
+                number(&data, "client"),
+                number(&data, "seq"),
+                string(&data, "json").as_deref(),
+                number(&data, "id"),
+                js_sys::Reflect::get(&data, &JsValue::from_str("readOnly")).ok().and_then(|v| v.as_bool()),
+            ) {
                 match msg {
                     Ok(msg) => {
                         let mut queue = collab.borrow_mut();

@@ -10,7 +10,7 @@ mod replica;
 mod structure;
 mod transform;
 
-pub use patch::{Applied, CellChange, Content, Field, Line, LineChange, Patch, SheetPatch, apply_patch, make_patch};
+pub use patch::{Applied, By, CellChange, Content, Field, Items, Line, LineChange, Patch, SheetPatch, apply_patch, make_patch};
 pub use replica::{Incoming, Outgoing, Replica};
 pub use structure::{Dir, StructEdit, replay};
 pub use transform::rebase;
@@ -22,6 +22,11 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value as Json;
 
 use crate::{DocState, EngineError, Result, Session};
+
+/// The largest edit shared with the others (its op as JSON). A bigger one (a paste of hundreds of
+/// thousands of cells) is taken back with a message to make it in smaller steps: the server and
+/// every other copy would have to swallow it whole.
+pub const MAX_SHARED_OP_BYTES: usize = 8 << 20;
 
 /// One edit as the others receive it.
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
@@ -85,7 +90,7 @@ pub fn apply_to_doc(d: &mut DocState, patch: &Patch) -> Result<()> {
     apply(d, &[], patch)
 }
 
-fn apply(d: &mut DocState, edits: &[StructEdit], patch: &Patch) -> Result<()> {
+pub(super) fn apply(d: &mut DocState, edits: &[StructEdit], patch: &Patch) -> Result<()> {
     if edits.is_empty() && patch.is_empty() {
         return Ok(());
     }
@@ -114,6 +119,8 @@ fn apply(d: &mut DocState, edits: &[StructEdit], patch: &Patch) -> Result<()> {
 pub(crate) struct Shared {
     pub(crate) uid: u64,
     replica: Replica,
+    /// This person can view the workbook but not edit it.
+    read_only: bool,
 }
 
 /// Co-editing through a [`Session`]: once started, every edit of the shared document (from any
@@ -125,8 +132,20 @@ impl Session {
     pub fn collab_start(&mut self, client: u64, seq: u64) -> Result<()> {
         let d = self.doc()?;
         let replica = Replica::new(client, d.wb.clone(), seq)?;
-        self.collab = Some(Shared { uid: d.uid, replica });
+        self.collab = Some(Shared { uid: d.uid, replica, read_only: false });
         Ok(())
+    }
+
+    /// This person can view the shared workbook but not edit it: an edit is taken back with a
+    /// message (selecting, scrolling and switching sheets still work).
+    pub fn collab_set_read_only(&mut self, read_only: bool) {
+        if let Some(c) = self.collab.as_mut() {
+            c.read_only = read_only;
+        }
+    }
+
+    pub fn collab_read_only(&self) -> bool {
+        self.collab.as_ref().is_some_and(|c| c.read_only)
     }
 
     pub fn collab_stop(&mut self) {
@@ -198,7 +217,20 @@ impl Session {
         let r = match self.docs.iter_mut().find(|d| d.uid == uid) {
             Some(d) => {
                 let edits = take_struct_log(d);
-                match capture(before, &d.wb, edits) {
+                let read_only = shared.read_only;
+                match capture(before, &d.wb, edits).and_then(|op| {
+                    if read_only && !op.is_empty() {
+                        return Err(EngineError::Other("You can view this workbook but not edit it.".into()));
+                    }
+                    let size = serde_json::to_vec(&op).map(|v| v.len()).unwrap_or(usize::MAX);
+                    if size > MAX_SHARED_OP_BYTES {
+                        return Err(EngineError::Other(format!(
+                            "That change is too large to share with the others ({:.1} MB). Make it in smaller steps.",
+                            size as f64 / 1_048_576.0
+                        )));
+                    }
+                    Ok(op)
+                }) {
                     Ok(op) => {
                         if !op.is_empty() {
                             shared.replica.local(d, before, op);

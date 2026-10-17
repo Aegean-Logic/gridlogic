@@ -15,10 +15,10 @@
 //! arrives afterwards (where someone else changed the same thing later, their change stays), and
 //! undoing sends it to everyone like any other edit.
 
-use std::collections::VecDeque;
+use std::collections::{HashMap, HashSet, VecDeque};
 use std::sync::Arc;
 
-use gridcraft_model::Workbook;
+use gridcraft_model::{Sheet, Workbook};
 use serde::{Deserialize, Serialize};
 use serde_json::Value as Json;
 
@@ -70,6 +70,9 @@ struct Pending {
     original: Op,
     /// Rebased over what arrived since, for showing it on top of `confirmed`.
     current: Op,
+    /// `current` was rebased over someone else's op since it was sent: its confirmed form may
+    /// differ from what's shown.
+    rebased: bool,
 }
 
 pub struct Replica {
@@ -82,7 +85,11 @@ pub struct Replica {
     buffer: VecDeque<Pending>,
     next_client_seq: u64,
     next_sheet: u64,
+    next_object: u32,
     /// This person's undo and redo steps (inverse ops), rebased to apply to what they see now.
+    /// What's shown may differ from confirmed + pending (an op was applied straight onto it while
+    /// edits were pending): rebuild it when this person's next op is confirmed.
+    drift: bool,
     undo: Vec<Op>,
     redo: Vec<Op>,
 }
@@ -103,6 +110,8 @@ impl Replica {
             buffer: VecDeque::new(),
             next_client_seq: 1,
             next_sheet: 1,
+            next_object: 1,
+            drift: false,
             undo: Vec::new(),
             redo: Vec::new(),
         })
@@ -149,6 +158,7 @@ impl Replica {
     /// and puts its inverse on the undo stack.
     pub fn local(&mut self, d: &mut DocState, before: &Workbook, mut op: Op) {
         self.retag_new_sheets(d, &mut op);
+        self.retag_new_objects(d, before, &mut op);
         self.queue(d, before, op, Kind::Edit);
     }
 
@@ -192,7 +202,7 @@ impl Replica {
         }
         let client_seq = self.next_client_seq;
         self.next_client_seq += 1;
-        self.buffer.push_back(Pending { client_seq, base: 0, original: op.clone(), current: op });
+        self.buffer.push_back(Pending { client_seq, base: 0, original: op.clone(), current: op, rebased: false });
     }
 
     /// The next op to send, if none is waiting for its echo.
@@ -204,6 +214,7 @@ impl Replica {
         p.base = self.seq;
         // What the server gets is the op as it stands now, against `base`.
         p.original = p.current.clone();
+        p.rebased = false;
         let out = Outgoing { client: self.client, client_seq: p.client_seq, base: p.base, op: p.original.clone() };
         self.inflight = Some(p);
         Some(out)
@@ -237,15 +248,28 @@ impl Replica {
             self.log.pop_front();
         }
 
-        if own {
-            self.inflight = None;
+        // Showing it: the whole rebuild (confirmed + pending, recalculated) only when needed.
+        let mut shown = if own {
+            // This person's own op: what's shown already has it, unless someone else's op
+            // arrived meanwhile and changed it on its way.
+            let rebased = self.inflight.take().is_some_and(|p| p.rebased);
+            let rebuild = rebased || self.drift;
+            !rebuild
+        } else if self.inflight.is_none() && self.buffer.is_empty() {
+            // Nothing pending: what's shown is the confirmed copy, so the op applies straight to
+            // it, recalculating only what it touches.
+            super::apply(d, &op.edits, &op.patch).is_ok()
         } else {
+            false
+        };
+        if !own {
             // This person's pending edits now go after the new entry.
             let mut theirs = op;
             for p in self.inflight.iter_mut().chain(self.buffer.iter_mut()) {
                 let mine = p.current.clone();
                 if let Ok(rebased) = rebase(&mine, &theirs, true, &before) {
                     p.current = rebased;
+                    p.rebased = true;
                 }
                 if let Ok(past) = rebase(&theirs, &mine, false, &before) {
                     theirs = past;
@@ -257,8 +281,18 @@ impl Replica {
                     *step = s;
                 }
             }
+            // With edits pending, the op as it lands after them goes straight onto what's shown
+            // too. It's what this person would see once theirs are confirmed; if the confirmed
+            // form comes out different, the rebuild when they're echoed puts it right.
+            if !shown {
+                shown = super::apply(d, &theirs.edits, &theirs.patch).is_ok();
+                self.drift |= shown;
+            }
         }
-        self.show(d);
+        if !shown {
+            self.show(d);
+            self.drift = false;
+        }
         Ok(())
     }
 
@@ -321,6 +355,85 @@ impl Replica {
             }
         }
     }
+}
+
+impl Replica {
+    /// Charts, tables and other objects this person's edit created get ids no one else's can
+    /// have (each copy would otherwise pick the same next number): the client id in the high 16
+    /// bits, a count in the low 16. Objects are told apart by id when merging, so two people
+    /// adding a chart at once both keep theirs.
+    fn retag_new_objects(&mut self, d: &mut DocState, before: &Workbook, op: &mut Op) {
+        let old: HashSet<u32> = before.sheets.iter().flat_map(|s| object_ids(s)).collect();
+        let mut taken: HashSet<u32> = d.wb.sheets.iter().flat_map(|s| object_ids(s)).collect();
+        if taken.iter().all(|id| old.contains(id)) {
+            return;
+        }
+        let mut map: HashMap<u32, u32> = HashMap::new();
+        let client = (self.client & 0xFFFF) as u32;
+        let wb = Arc::make_mut(&mut d.wb);
+        for sh in wb.sheets.iter_mut() {
+            if object_ids(sh).iter().all(|id| old.contains(id)) {
+                continue;
+            }
+            each_object_id(Arc::make_mut(sh), |id| {
+                if old.contains(id) {
+                    return;
+                }
+                let mut fresh = *id;
+                for _ in 0..=0xFFFF {
+                    let candidate = (client << 16) | (self.next_object & 0xFFFF);
+                    self.next_object = self.next_object.wrapping_add(1);
+                    if candidate != 0 && !taken.contains(&candidate) {
+                        fresh = candidate;
+                        break;
+                    }
+                }
+                taken.insert(fresh);
+                map.insert(*id, fresh);
+                *id = fresh;
+            });
+        }
+        // The op names them by the new ids too.
+        let renumber = |item: &mut serde_json::Value| {
+            if let Some(id) = item.get_mut("id")
+                && let Some(new) = id.as_u64().and_then(|n| u32::try_from(n).ok()).and_then(|n| map.get(&n))
+            {
+                *id = serde_json::Value::from(*new);
+            }
+        };
+        for f in op.patch.sheets.iter_mut().flat_map(|sp| sp.fields.iter_mut()).filter(|f| OBJECT_LISTS.contains(&f.name.as_str())) {
+            if let Some(items) = f.items.as_mut() {
+                items.set.iter_mut().chain(items.remove.iter_mut()).for_each(renumber);
+            }
+            if let Some(serde_json::Value::Array(list)) = f.value.as_mut() {
+                list.iter_mut().for_each(renumber);
+            }
+        }
+    }
+}
+
+/// The settings that hold objects with ids.
+const OBJECT_LISTS: &[&str] = &["charts", "images", "shapes", "tables", "slicers", "pivots"];
+
+fn object_ids(sh: &Sheet) -> Vec<u32> {
+    sh.charts
+        .iter()
+        .map(|o| o.id)
+        .chain(sh.images.iter().map(|o| o.id))
+        .chain(sh.shapes.iter().map(|o| o.id))
+        .chain(sh.tables.iter().map(|o| o.id))
+        .chain(sh.slicers.iter().map(|o| o.id))
+        .chain(sh.pivots.iter().map(|o| o.id))
+        .collect()
+}
+
+fn each_object_id(sh: &mut Sheet, mut f: impl FnMut(&mut u32)) {
+    sh.charts.iter_mut().for_each(|o| f(&mut o.id));
+    sh.images.iter_mut().for_each(|o| f(&mut o.id));
+    sh.shapes.iter_mut().for_each(|o| f(&mut o.id));
+    sh.tables.iter_mut().for_each(|o| f(&mut o.id));
+    sh.slicers.iter_mut().for_each(|o| f(&mut o.id));
+    sh.pivots.iter_mut().for_each(|o| f(&mut o.id));
 }
 
 /// The structural edits that take back `edits`, last first. A move has none (its patch carries

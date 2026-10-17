@@ -339,7 +339,7 @@ impl Session {
         let shared = self.exec_depth == 0 && before.as_ref().is_some_and(|(uid, ..)| self.collab.as_ref().is_some_and(|c| c.uid == *uid));
         if shared {
             // Snapshot undo would take back other people's edits too: undo this person's own.
-            if matches!(id, "edit.undo" | "edit.redo") {
+            if matches!(id, "edit.undo" | "edit.redo") && !self.collab_read_only() {
                 return self.collab_undo(id == "edit.redo");
             }
             if let Some(d) = self.active_mut() {

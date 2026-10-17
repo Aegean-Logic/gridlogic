@@ -1,8 +1,7 @@
 # Real-time co-editing: design
 
-Status: phases 1 (engine), 2 (transport through Nextcloud) and 3 (presence, collaborative
-undo) done, 2026-10-17. Fork-specific (Aegean Office). Not upstream behaviour. Phase 4
-(hardening) is next.
+Status: phases 1–4 done (engine, transport through Nextcloud, presence and collaborative undo,
+hardening), 2026-10-17. Fork-specific (Aegean Office). Not upstream behaviour.
 
 ## Where it stands
 
@@ -13,6 +12,31 @@ Everyone with a file open in Nextcloud edits it live:
 - **Undo and Redo** take back a person's own edits only, never someone else's later change.
 - **Saving:** the shared workbook is saved back to the file every 20 edits or 30 seconds, and on
   Save, even when the saving member's tab is in the background.
+
+Phase 4 pieces:
+- **Objects merge one by one.** List and map settings travel as item changes (`Field::items`,
+  `patch::merge_by`):
+  - charts, images, shapes, tables, slicers and pivots by id
+  - conditional formats, validations, merges, sparklines, names and similar by value
+  - comments and hyperlinks by cell
+
+  Two people adding a chart, a rule or a note at once both keep theirs. Items shift with
+  structural edits like whole settings, and conflict only when they're the same item.
+- **Collision-free object ids.** Objects made in a shared session get ids namespaced by client
+  (`client << 16 | n`), as sheets do (`Replica::retag_new_objects`).
+- **Read-only participants.** `Session::collab_set_read_only`: an edit is taken back with a
+  message, and nothing is sent. The page passes `readOnly` from the file's permissions; only
+  members who can edit write checkpoints (`gridcraft_members.can_edit`).
+- **Large edits.** Each style travels once per patch (`Patch::styles`), and identical
+  neighbouring cell changes travel as rectangles (`CellChange::to`). Bolding 50,000 cells is
+  under 4 KB, down from 1.9 MB. An op over 8 MB (`MAX_SHARED_OP_BYTES`) is refused at the source
+  with a message. A patch claiming more than 5 million cells is refused when applied
+  (`MAX_PATCH_CELLS`). The page treats a push the server refuses outright as a reason to rejoin
+  rather than retry.
+- **Faster updates.** A remote op is applied straight to what's shown, recalculating only what
+  it touches, instead of rebuilding from the confirmed copy. A copy that took this shortcut while
+  its own edits were pending rebuilds once they're confirmed. 100 remote edits on 40,000
+  formulas take about 2 ms, against 4.7 s before.
 
 Phase 3 pieces:
 - **Collaborative undo.** In `collab::Replica`, each local edit's inverse is computed with
@@ -64,8 +88,8 @@ Decisions made while building it:
 - **A copy missing log history must rejoin** rather than guess: placing an op without the
   entries its author hadn't seen would diverge. The server must give a joining copy the log
   from its checkpoint on.
-- **Known cost:** each received op rebuilds the shown workbook and recalculates it fully. Fine
-  for typical sheets; incremental recalculation is a phase 4 item.
+- **Received ops apply incrementally** (phase 4). A full rebuild happens only after a shortcut
+  taken while this person's edits were pending.
 
 Goal: several people edit one workbook at once, as in Excel Online. Each person sees the
 others' edits within about a second and their selections live, and everyone ends with the same
@@ -139,13 +163,14 @@ op the next sequence number and hands out the log. All transformation happens in
 | **Structural edit** | Shift positions (insert/insert at the same position: earlier sequence goes first; overlapping deletes shrink; an edit inside a deleted span vanishes) | No change |
 | **Content patch** | Map every cell and range through the edit (`map_range`). Drop entries that were deleted. **Also adjust formula text** with `adjust::adjust`, so a formula typed during someone else's row insert still points at the right cells. | Last writer wins, per cell and per field (input vs style); per field for sheet features |
 
-Known prototype limits:
-- Two users inserting an object (chart, table) at the same moment get the same id. The later
-  one gets a fresh id, assigned deterministically during transform.
-- Feature lists are last-writer-wins as a whole field. Per-object ops come in phase 4.
-- Sort is a patch: someone typing in a range while another user sorts it keeps their cell value
-  at its old address, not the sorted one. Excel Online has the same class of quirk. Phase 4 can
-  turn sort into a permutation op.
+Remaining limits:
+- **Sort is a patch.** Someone typing in a range while another user sorts it keeps their cell
+  value at its old address, not the sorted one. Excel Online has the same class of quirk. A
+  permutation op would fix it.
+- **A changed item replaces the item.** Two people changing the same chart (or the same
+  conditional-format rule) at once: the later change wins whole, not property by property.
+- **Object ids namespace the client id modulo 2¹⁶.** Two clients of one file whose ids differ by
+  a multiple of 65,536 could pick the same id for a new object; client ids grow by one per join.
 
 ## 4. Undo in a shared workbook
 

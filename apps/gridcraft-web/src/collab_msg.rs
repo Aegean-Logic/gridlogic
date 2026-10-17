@@ -18,9 +18,9 @@ const MAX_SAFE_INTEGER: f64 = 9_007_199_254_740_991.0;
 /// What the page asks of the shared session.
 #[derive(Debug, PartialEq)]
 pub enum FromPage {
-    /// `gridcraft:collab:start {client, seq}`: the workbook just opened is the shared one as of
-    /// log position `seq`; this person is `client`.
-    Start { client: u64, seq: u64 },
+    /// `gridcraft:collab:start {client, seq, readOnly?}`: the workbook just opened is the shared
+    /// one as of log position `seq`; this person is `client`, and with `readOnly` can't edit.
+    Start { client: u64, seq: u64, read_only: bool },
     /// `gridcraft:collab:entries {json}`: log entries, in order, as JSON text.
     Entries(Vec<Incoming>),
     /// `gridcraft:collab:checkpoint {id}`: send the shared workbook to save.
@@ -71,10 +71,19 @@ impl Position {
 
 /// The co-editing message in a page message of type `kind`, if it is one. `Err` for one that's
 /// malformed (told back to the page).
-pub fn parse(kind: &str, client: Option<f64>, seq: Option<f64>, json: Option<&str>, id: Option<f64>) -> Option<Result<FromPage, String>> {
+pub fn parse(
+    kind: &str,
+    client: Option<f64>,
+    seq: Option<f64>,
+    json: Option<&str>,
+    id: Option<f64>,
+    read_only: Option<bool>,
+) -> Option<Result<FromPage, String>> {
     let need = |v: Option<f64>, what: &str| whole(v).ok_or_else(|| format!("{kind}: `{what}` must be a whole number"));
     Some(match kind {
-        "gridcraft:collab:start" => need(client, "client").and_then(|client| Ok(FromPage::Start { client, seq: need(seq, "seq")? })),
+        "gridcraft:collab:start" => {
+            need(client, "client").and_then(|client| Ok(FromPage::Start { client, seq: need(seq, "seq")?, read_only: read_only.unwrap_or(false) }))
+        }
         "gridcraft:collab:entries" => match json {
             None => Err(format!("{kind}: `json` is missing")),
             Some(text) if text.len() > MAX_JSON_BYTES => Err(format!("{kind}: more than {MAX_JSON_BYTES} bytes")),
@@ -129,27 +138,34 @@ mod tests {
 
     #[test]
     fn messages_from_the_page_are_checked() {
-        assert_eq!(parse("gridcraft:open", None, None, None, None), None, "not a co-editing message");
-        assert_eq!(parse("gridcraft:collab:start", Some(3.0), Some(0.0), None, None), Some(Ok(FromPage::Start { client: 3, seq: 0 })));
-        assert!(matches!(parse("gridcraft:collab:start", Some(3.5), Some(0.0), None, None), Some(Err(_))));
-        assert!(matches!(parse("gridcraft:collab:start", Some(3.0), None, None, None), Some(Err(_))));
-        assert_eq!(parse("gridcraft:collab:checkpoint", None, None, None, Some(7.0)), Some(Ok(FromPage::Checkpoint { id: 7 })));
-        assert_eq!(parse("gridcraft:collab:stop", None, None, None, None), Some(Ok(FromPage::Stop)));
+        assert_eq!(parse("gridcraft:open", None, None, None, None, None), None, "not a co-editing message");
+        assert_eq!(
+            parse("gridcraft:collab:start", Some(3.0), Some(0.0), None, None, None),
+            Some(Ok(FromPage::Start { client: 3, seq: 0, read_only: false }))
+        );
+        assert_eq!(
+            parse("gridcraft:collab:start", Some(3.0), Some(0.0), None, None, Some(true)),
+            Some(Ok(FromPage::Start { client: 3, seq: 0, read_only: true }))
+        );
+        assert!(matches!(parse("gridcraft:collab:start", Some(3.5), Some(0.0), None, None, None), Some(Err(_))));
+        assert!(matches!(parse("gridcraft:collab:start", Some(3.0), None, None, None, None), Some(Err(_))));
+        assert_eq!(parse("gridcraft:collab:checkpoint", None, None, None, Some(7.0), None), Some(Ok(FromPage::Checkpoint { id: 7 })));
+        assert_eq!(parse("gridcraft:collab:stop", None, None, None, None, None), Some(Ok(FromPage::Stop)));
 
         let entry = Incoming { seq: 1, client: 2, client_seq: 1, base: 0, op: Default::default() };
         let entries = serde_json::to_string(&vec![entry]).unwrap_or_default();
-        match parse("gridcraft:collab:entries", None, None, Some(&entries), None) {
+        match parse("gridcraft:collab:entries", None, None, Some(&entries), None, None) {
             Some(Ok(FromPage::Entries(e))) => assert_eq!(e.len(), 1),
             other => panic!("{other:?}"),
         }
-        assert!(matches!(parse("gridcraft:collab:entries", None, None, Some("[{]"), None), Some(Err(_))));
+        assert!(matches!(parse("gridcraft:collab:entries", None, None, Some("[{]"), None, None), Some(Err(_))));
         // A garbled op is a no-op in its place, not a stalled session.
         let garbled = r#"[{"seq":4,"client":2,"client_seq":9,"base":3,"op":{"edits":"nonsense"}}]"#;
-        match parse("gridcraft:collab:entries", None, None, Some(garbled), None) {
+        match parse("gridcraft:collab:entries", None, None, Some(garbled), None, None) {
             Some(Ok(FromPage::Entries(e))) => assert!(e.len() == 1 && e[0].seq == 4 && e[0].op.is_empty()),
             other => panic!("{other:?}"),
         }
-        assert!(matches!(parse("gridcraft:collab:entries", None, None, Some(r#"[{"client":2}]"#), None), Some(Err(_))), "no seq");
+        assert!(matches!(parse("gridcraft:collab:entries", None, None, Some(r#"[{"client":2}]"#), None, None), Some(Err(_))), "no seq");
 
         // Where the others are: names capped, colours checked.
         let long = "x".repeat(500);
@@ -157,7 +173,7 @@ mod tests {
             r##"[{{"name":"{long}","color":"#12718C","sheet":3,"active":{{"row":4,"col":1}},"ranges":[{{"start":{{"row":4,"col":1}},"end":{{"row":6,"col":2}}}}]}},
                {{"name":"Ben","color":"blue","sheet":3,"active":{{"row":0,"col":0}}}}]"##
         );
-        match parse("gridcraft:collab:presence", None, None, Some(&people), None) {
+        match parse("gridcraft:collab:presence", None, None, Some(&people), None, None) {
             Some(Ok(FromPage::Presence(p))) => {
                 assert_eq!(p.len(), 2);
                 assert_eq!(p[0].name.chars().count(), MAX_NAME_CHARS);
@@ -167,9 +183,9 @@ mod tests {
             }
             other => panic!("{other:?}"),
         }
-        assert!(matches!(parse("gridcraft:collab:presence", None, None, Some("{}"), None), Some(Err(_))));
+        assert!(matches!(parse("gridcraft:collab:presence", None, None, Some("{}"), None, None), Some(Err(_))));
         let many: Vec<RangeRef> = (0..500).map(|i| RangeRef::cell(CellRef::new(i, 0))).collect();
         assert_eq!(Position::new(1, CellRef::new(0, 0), &many).ranges.len(), MAX_RANGES);
-        assert!(matches!(parse("gridcraft:collab:entries", None, None, None, None), Some(Err(_))));
+        assert!(matches!(parse("gridcraft:collab:entries", None, None, None, None, None), Some(Err(_))));
     }
 }

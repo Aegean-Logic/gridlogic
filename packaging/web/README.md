@@ -107,7 +107,7 @@ merging; the page connects it to a server that orders everyone's edits into one 
 
 | Message | Direction | Fields |
 |---|---|---|
-| `gridcraft:collab:start` | from the page | `client` (this person's id from the server, 1 to 2³²−1), `seq`. Send right after `gridcraft:open`: the workbook just opened is the shared one as of log position `seq`. |
+| `gridcraft:collab:start` | from the page | `client` (this person's id from the server, 1 to 2³²−1), `seq`, optional `readOnly` (this person can view but not edit: edits are taken back with a message). Send right after `gridcraft:open`: the workbook just opened is the shared one as of log position `seq`. |
 | `gridcraft:collab:entries` | from the page | `json`: the server's log entries in order, as JSON text: `[{seq, client, client_seq, base, op}]`, `op` exactly as the server received it. An entry whose op doesn't parse becomes a no-op in its place. |
 | `gridcraft:collab:op` | to the page | `json`: this person's next edit for the server, `{client, client_seq, base, op}`. The next comes once this one is back in the log, so send them in order and retry a failed one (the server must recognise a repeated `client`/`client_seq`). |
 | `gridcraft:collab:checkpoint` | from the page | `id`: asks for the shared workbook to save to the file. |

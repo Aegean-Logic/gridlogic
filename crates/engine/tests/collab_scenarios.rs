@@ -300,3 +300,88 @@ fn a_shared_session_shares_every_edit() {
     assert_eq!(input("C1"), "Notes");
     assert_eq!(input("D2"), "Ben was here");
 }
+
+/// Charts, conditional formats and notes on one sheet, by two people at once: everyone keeps
+/// both of each (they merge item by item, not as whole lists).
+#[test]
+fn two_people_adding_charts_rules_and_notes_keep_both() {
+    let (mut ana, mut ben) = two(&[("A1", "1"), ("A2", "2"), ("B1", "3"), ("B2", "4")]);
+    let mut log = Vec::new();
+    run(&mut ana, "insert.chart", json!({"range": "A1:A2", "type": "line", "at": "D2"}));
+    run(&mut ben, "insert.chart", json!({"range": "B1:B2", "type": "column", "at": "J2"}));
+    run(
+        &mut ana,
+        "home.conditionalFormat",
+        json!({"range": "A1:A2", "rule": {"type": "cellIs", "operator": "greater", "value": 1, "preset": "lightRedFill"}}),
+    );
+    run(
+        &mut ben,
+        "home.conditionalFormat",
+        json!({"range": "B1:B2", "rule": {"type": "cellIs", "operator": "less", "value": 4, "preset": "greenFill"}}),
+    );
+    run(&mut ana, "review.newNote", json!({"cell": "A1", "text": "Ana's note"}));
+    run(&mut ben, "review.newNote", json!({"cell": "B1", "text": "Ben's note"}));
+    settle(&mut ana, &mut ben, &mut log);
+    let sheet = |p: &Person| p.session.active().and_then(|d| d.wb.sheets.first().cloned()).unwrap_or_else(|| panic!("no sheet"));
+    let (a, b) = (sheet(&ana), sheet(&ben));
+    assert_eq!(a.charts.len(), 2, "both charts survive");
+    assert_eq!(a.cond_formats.len(), 2, "both rules survive");
+    assert_eq!(a.comments.len(), 2, "both notes survive");
+    let ids = |s: &gridcraft_engine::model::Sheet| s.charts.iter().map(|c| c.id).collect::<Vec<_>>();
+    assert_ne!(ids(&a)[0], ids(&a)[1], "the charts have different ids");
+    let diff = gridcraft_engine::collab::make_patch(
+        &ana.session.active().map(|d| d.wb.clone()).unwrap_or_default(),
+        &ben.session.active().map(|d| d.wb.clone()).unwrap_or_default(),
+    )
+    .unwrap_or_else(|e| panic!("{e}"));
+    assert!(diff.is_empty(), "Ana and Ben have the same workbook: {diff:?}");
+    assert_eq!(b.charts.len(), 2);
+}
+
+/// One chart moved by two people at once: the later move wins, and there's still one chart.
+#[test]
+fn the_same_chart_changed_twice_stays_one_chart() {
+    let (mut ana, mut ben) = two(&[("A1", "1"), ("A2", "2")]);
+    let mut log = Vec::new();
+    run(&mut ana, "insert.chart", json!({"range": "A1:A2", "type": "line", "at": "D2"}));
+    settle(&mut ana, &mut ben, &mut log);
+    let id = ana.session.active().and_then(|d| d.wb.sheets.first().and_then(|s| s.charts.first().map(|c| c.id))).unwrap_or_default();
+    for (p, title) in [(&mut ana, "Ana's title"), (&mut ben, "Ben's title")] {
+        if let Err(e) = p.replica.run(&mut p.session, "chart.set", json!({"chart": id, "title": title})) {
+            panic!("chart.set: {e}");
+        }
+    }
+    settle(&mut ana, &mut ben, &mut log);
+    let charts = |p: &Person| p.session.active().and_then(|d| d.wb.sheets.first().map(|s| s.charts.clone())).unwrap_or_default();
+    assert_eq!(charts(&ana).len(), 1);
+    assert_eq!(charts(&ana), charts(&ben));
+}
+
+/// Someone who can view but not edit: edits are refused and leave nothing behind (nothing to
+/// send), while selecting and switching sheets still work.
+#[test]
+fn a_read_only_participant_cannot_edit() {
+    let mut s = Session::new();
+    s.add_document(DocState::new(Workbook::new(), None, "Shared".into()));
+    if let Err(e) = s.run("cell.set", json!({"cell": "A1", "input": "original"})) {
+        panic!("{e}");
+    }
+    if let Err(e) = s.collab_start(7, 0) {
+        panic!("{e}");
+    }
+    s.collab_set_read_only(true);
+    let before = s.active().map(|d| d.wb.clone()).unwrap_or_default();
+    for (id, params) in [
+        ("cell.set", json!({"cell": "A1", "input": "changed"})),
+        ("home.bold", json!({"range": "A1", "on": true})),
+        ("home.insertRows", json!({"rows": "1:1"})),
+        ("edit.undo", json!({})),
+    ] {
+        assert!(s.run(id, params).is_err(), "{id} is refused");
+    }
+    assert!(s.run("selection.set", json!({"range": "C3"})).is_ok(), "selecting still works");
+    let after = s.active().map(|d| d.wb.clone()).unwrap_or_default();
+    let diff = gridcraft_engine::collab::make_patch(&before, &after).unwrap_or_else(|e| panic!("{e}"));
+    assert!(diff.is_empty(), "nothing changed: {diff:?}");
+    assert!(s.collab_outgoing().is_none(), "nothing to send");
+}

@@ -14,8 +14,9 @@ use std::sync::Arc;
 use gridcraft_core::{CellRef, RangeRef};
 use gridcraft_formula::adjust::Edit;
 use gridcraft_model::{Sheet, Workbook};
+use serde_json::Value as Json;
 
-use super::patch::{field_of, set_sheet_field, set_workbook_field};
+use super::patch::{Items, compress_cells, expand_cells, field_of, set_sheet_field, set_workbook_field};
 use super::{Content, Dir, Field, Op, Patch, StructEdit};
 use crate::cmd::sheet::{apply_shift, map_range};
 use crate::{EngineError, Result};
@@ -231,13 +232,18 @@ fn patch_over(p: &Patch, e: &StructEdit, base: &Workbook) -> Result<Patch> {
     for sp in out.sheets.iter_mut() {
         let host = name_of(sp.id).unwrap_or_default();
         if sp.id == target {
-            sp.cells.retain_mut(|c| match map_range(RangeRef::cell(c.at), &edit) {
+            // Cell by cell: a rectangle may be split by the shift (rows inserted inside it don't
+            // take its change), then merged again.
+            let mut cells = expand_cells(&sp.cells);
+            cells.retain_mut(|c| match map_range(RangeRef::cell(c.at), &edit) {
                 Some(r) => {
                     c.at = r.start;
                     true
                 }
                 None => false,
             });
+            cells.sort_by_key(|c| c.at);
+            sp.cells = compress_cells(cells);
             if let Some(dir) = line_dir {
                 let lines = match dir {
                     Dir::Rows => &mut sp.rows,
@@ -281,12 +287,46 @@ fn map_line(v: u32, e: &Edit) -> Option<u32> {
     }
 }
 
-/// Shifts the settings `p` replaces (per sheet and workbook-wide) for `edit` on sheet `target`,
-/// by loading them into a probe copy of `base`'s sheet list (no cells) and running the replay's
-/// own shift on it.
+/// Which part of a setting a shift pass moves: whole values and the items set, or the items
+/// removed (two passes, as both are lists of the same setting).
+#[derive(Clone, Copy, PartialEq)]
+enum Part {
+    Set,
+    Remove,
+}
+
+/// The JSON a pass shifts for `f`, if any.
+fn payload(f: &Field, part: Part) -> Option<Json> {
+    match (&f.items, part) {
+        (None, Part::Set) => f.value.clone(),
+        (None, Part::Remove) => None,
+        (Some(i), Part::Set) => (!i.set.is_empty()).then(|| Items::container(i.by, &i.set)),
+        (Some(i), Part::Remove) => (!i.remove.is_empty()).then(|| Items::container(i.by, &i.remove)),
+    }
+}
+
+/// Puts a pass's shifted JSON back into `f`.
+fn put_back(f: &mut Field, part: Part, shifted: Option<Json>) {
+    match (&mut f.items, part) {
+        (None, _) => f.value = shifted,
+        (Some(i), Part::Set) => i.set = Items::items(i.by, shifted.as_ref()),
+        (Some(i), Part::Remove) => i.remove = Items::items(i.by, shifted.as_ref()),
+    }
+}
+
+/// Shifts the settings `p` sets (per sheet and workbook-wide: whole values, and the items it adds,
+/// changes and removes) for `edit` on sheet `target`, by loading them into a probe copy of
+/// `base`'s sheet list (no cells) and running the replay's own shift on it.
 fn shift_settings(p: &mut Patch, base: &Workbook, target: u64, edit: &Edit) -> Result<()> {
-    let has_sheet_fields = p.sheets.iter().any(|sp| !sp.fields.is_empty());
-    if !has_sheet_fields && p.fields.is_empty() {
+    for part in [Part::Set, Part::Remove] {
+        shift_part(p, base, target, edit, part)?;
+    }
+    Ok(())
+}
+
+fn shift_part(p: &mut Patch, base: &Workbook, target: u64, edit: &Edit, part: Part) -> Result<()> {
+    let any = p.fields.iter().chain(p.sheets.iter().flat_map(|sp| sp.fields.iter())).any(|f| payload(f, part).is_some());
+    if !any {
         return Ok(());
     }
     let mut probe = Workbook::new();
@@ -300,25 +340,38 @@ fn shift_settings(p: &mut Patch, base: &Workbook, target: u64, edit: &Edit) -> R
         })
         .collect();
     let Some(ti) = probe.sheet_by_id(target) else { return Ok(()) };
-    for sp in p.sheets.iter().filter(|sp| !sp.fields.is_empty()) {
+    let whole = |f: &Field, json: Json| Field { name: f.name.clone(), value: Some(json), items: None };
+    for sp in &p.sheets {
         let Some(si) = probe.sheet_by_id(sp.id) else { continue };
         if let Some(sh) = probe.sheet_mut(si) {
             for f in &sp.fields {
-                set_sheet_field(sh, f)?;
+                if let Some(json) = payload(f, part) {
+                    set_sheet_field(sh, &whole(f, json))?;
+                }
             }
         }
     }
     for f in &p.fields {
-        set_workbook_field(&mut probe, f)?;
+        if let Some(json) = payload(f, part) {
+            set_workbook_field(&mut probe, &whole(f, json))?;
+        }
     }
     apply_shift(&mut probe, ti, edit)?;
-    for sp in p.sheets.iter_mut().filter(|sp| !sp.fields.is_empty()) {
+    for sp in p.sheets.iter_mut() {
         let Some(sh) = probe.sheet_by_id(sp.id).and_then(|i| probe.sheet(i)) else { continue };
-        let names: Vec<String> = sp.fields.iter().map(|f| f.name.clone()).collect();
-        sp.fields = names.iter().map(|n| field_of(sh, n)).collect::<Result<_>>()?;
+        for f in sp.fields.iter_mut() {
+            if payload(f, part).is_some() {
+                let shifted = field_of(sh, &f.name)?.value;
+                put_back(f, part, shifted);
+            }
+        }
     }
-    let names: Vec<String> = p.fields.iter().map(|f| f.name.clone()).collect();
-    p.fields = names.iter().map(|n| field_of(&probe, n)).collect::<Result<_>>()?;
+    for f in p.fields.iter_mut() {
+        if payload(f, part).is_some() {
+            let shifted = field_of(&probe, &f.name)?.value;
+            put_back(f, part, shifted);
+        }
+    }
     Ok(())
 }
 
@@ -355,22 +408,48 @@ fn drop_conflicts(mine: &mut Patch, theirs: &Patch) {
     }
     for sp in mine.sheets.iter_mut() {
         let Some(other) = theirs.sheets.iter().find(|o| o.id == sp.id) else { continue };
-        sp.fields.retain(|f| !other.fields.iter().any(|g: &Field| g.name == f.name));
+        drop_field_conflicts(&mut sp.fields, &other.fields);
         sp.rows.retain(|l| !other.rows.iter().any(|m| m.at == l.at));
         sp.cols.retain(|l| !other.cols.iter().any(|m| m.at == l.at));
-        for c in sp.cells.iter_mut() {
-            if let Some(o) = other.cells.iter().find(|o| o.at == c.at) {
-                if o.content.is_some() {
-                    c.content = None;
-                }
-                if o.style.is_some() {
-                    c.style = None;
+        let touches = |a: &super::CellChange| other.cells.iter().any(|o| o.range().intersects(&a.range()));
+        if sp.cells.iter().any(touches) {
+            // Cell by cell where they meet.
+            let theirs: std::collections::HashMap<CellRef, (bool, bool)> =
+                expand_cells(&other.cells).into_iter().map(|o| (o.at, (o.content.is_some(), o.style.is_some()))).collect();
+            let mut cells = expand_cells(&sp.cells);
+            for c in cells.iter_mut() {
+                if let Some((content, style)) = theirs.get(&c.at) {
+                    if *content {
+                        c.content = None;
+                    }
+                    if *style {
+                        c.style = None;
+                    }
                 }
             }
+            cells.retain(|c| c.content.is_some() || c.style.is_some());
+            sp.cells = compress_cells(cells);
         }
-        sp.cells.retain(|c| c.content.is_some() || c.style.is_some());
     }
-    mine.fields.retain(|f| !theirs.fields.iter().any(|g| g.name == f.name));
+    drop_field_conflicts(&mut mine.fields, &theirs.fields);
+}
+
+/// Settings both set: a whole value on either side goes to theirs; items of a list or map
+/// conflict only where they're the same item.
+fn drop_field_conflicts(mine: &mut Vec<Field>, theirs: &[Field]) {
+    mine.retain_mut(|f| {
+        let Some(g) = theirs.iter().find(|g| g.name == f.name) else { return true };
+        match (&mut f.items, &g.items) {
+            (Some(m), Some(o)) if m.by == o.by => {
+                let by = m.by;
+                let taken: std::collections::HashSet<String> = o.set.iter().chain(o.remove.iter()).map(|e| Items::key(by, e)).collect();
+                m.set.retain(|e| !taken.contains(&Items::key(by, e)));
+                m.remove.retain(|e| !taken.contains(&Items::key(by, e)));
+                !(m.set.is_empty() && m.remove.is_empty())
+            }
+            _ => false,
+        }
+    });
 }
 
 #[cfg(test)]

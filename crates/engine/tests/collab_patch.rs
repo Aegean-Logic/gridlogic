@@ -165,3 +165,21 @@ fn a_hostile_op_is_refused() {
         assert!(Arc::ptr_eq(&other.wb, &before), "a refused op changed the copy");
     }
 }
+
+/// Formatting or filling a large range travels as a handful of rectangles, not cell by cell.
+#[test]
+fn large_edits_make_small_ops() {
+    for (id, params) in [
+        ("home.bold", json!({"range": "A1:J5000", "on": true})),
+        ("home.bold", json!({"range": "A:A", "on": true})),
+        ("range.fill", json!({"range": "A1:A20000", "input": "=ROW()"})),
+    ] {
+        let mut s = Session::new();
+        if let Err(e) = s.run("file.new", json!({})) {
+            panic!("{e}");
+        }
+        let (_, op) = collab::run_captured(&mut s, id, params.clone()).unwrap_or_else(|e| panic!("{id}: {e}"));
+        let size = serde_json::to_vec(&op).map(|v| v.len()).unwrap_or(0);
+        assert!(size < 4096, "{id} {params}: {size} bytes");
+    }
+}
