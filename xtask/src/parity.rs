@@ -106,7 +106,8 @@ pub fn run(root: &Path, args: &[&str]) -> Result<(), String> {
     let text = render(&entries());
     if check {
         let current = std::fs::read_to_string(&out).map_err(|e| format!("{}: {e}", out.display()))?;
-        if current != text {
+        // A Windows checkout (`core.autocrlf`) has CRLF line endings; only the content counts.
+        if current.replace("\r\n", "\n") != text {
             return Err(format!("{} is out of date; run `cargo xtask parity`", out.display()));
         }
         println!("{} ({} up to date)", summary_line(), out.display());
