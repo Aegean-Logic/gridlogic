@@ -30,6 +30,8 @@
 
     <Icon Id="GridcraftIcon.ico" SourceFile="$(var.IconPath)" />
     <Property Id="ARPPRODUCTICON" Value="GridcraftIcon.ico" />
+    <!-- The Aegean Logic banner at the top of each Setup dialog (branding/generate.ps1). -->
+    <Binary Id="GridlogicBanner" SourceFile="$(sys.SOURCEFILEDIR)branding\banner.bmp" />
     <Property Id="ARPURLINFOABOUT" Value="https://www.aegeanlogic.co.uk" />
     <Property Id="ARPURLUPDATEINFO" Value="https://www.aegeanlogic.co.uk" />
     <Property Id="ARPHELPLINK" Value="https://www.aegeanlogic.co.uk" />
@@ -55,13 +57,19 @@
     <EnsureTable Id="ListBox" />
     <UI>
       <TextStyle Id="GridcraftUIFont" FaceName="Segoe UI" Size="9" />
-      <Dialog Id="DesktopShortcutDlg" Width="320" Height="150" Title="GridLogic Setup" NoMinimize="yes">
-        <Control Id="Heading" Type="Text" X="15" Y="15" Width="290" Height="20" Text="Install GridLogic" />
-        <Control Id="Description" Type="Text" X="15" Y="40" Width="290" Height="28"
-            Text="Install GridLogic for everyone who uses this computer." />
-        <Control Id="DesktopShortcutCheckbox" Type="CheckBox" X="15" Y="76" Width="290" Height="18"
+      <TextStyle Id="GridlogicTitleFont" FaceName="Segoe UI" Size="13" Bold="yes" />
+      <!-- Every Setup dialog opens with the Aegean Logic banner (370 x 56 dialog units). -->
+      <Dialog Id="DesktopShortcutDlg" Width="370" Height="214" Title="GridLogic Setup" NoMinimize="yes">
+        <Control Id="Banner" Type="Bitmap" X="0" Y="0" Width="370" Height="56" TabSkip="no" Text="GridlogicBanner" />
+        <Control Id="Heading" Type="Text" X="20" Y="68" Width="330" Height="18" Text="{\GridlogicTitleFont}Install GridLogic" />
+        <Control Id="Description" Type="Text" X="20" Y="90" Width="330" Height="28"
+            Text="GridLogic, the spreadsheet by Aegean Logic, will be installed for everyone who uses this computer." />
+        <Control Id="DesktopShortcutCheckbox" Type="CheckBox" X="20" Y="124" Width="330" Height="16"
             Property="DesktopShortcutChoice" CheckBoxValue="1" Text="Create a &amp;desktop shortcut" />
-        <Control Id="Install" Type="PushButton" X="165" Y="118" Width="65" Height="20"
+        <Control Id="BottomLine" Type="Line" X="0" Y="172" Width="370" Height="0" />
+        <Control Id="Website" Type="Hyperlink" X="20" Y="186" Width="150" Height="12"
+            Text="&lt;a href=&quot;https://www.aegeanlogic.co.uk&quot;&gt;www.aegeanlogic.co.uk&lt;/a&gt;" />
+        <Control Id="Install" Type="PushButton" X="232" Y="183" Width="60" Height="18"
             Default="yes" ElevationShield="yes" Text="&amp;Install">
           <!-- An unchecked checkbox clears its property. Publish an explicit zero so the
                elevated execute sequence receives an unambiguous opt-out. -->
@@ -69,7 +77,7 @@
           <Publish Property="DESKTOPSHORTCUT" Value="0" Condition="NOT DesktopShortcutChoice" />
           <Publish Event="EndDialog" Value="Return" />
         </Control>
-        <Control Id="Cancel" Type="PushButton" X="240" Y="118" Width="65" Height="20" Cancel="yes" Text="Cancel">
+        <Control Id="Cancel" Type="PushButton" X="298" Y="183" Width="60" Height="18" Cancel="yes" Text="Cancel">
           <Publish Event="EndDialog" Value="Exit" />
         </Control>
       </Dialog>
@@ -114,21 +122,27 @@
           <Publish Event="EndDialog" Value="Exit" />
         </Control>
       </Dialog>
-      <Dialog Id="SetupCompleteDlg" Width="320" Height="110" Title="GridLogic Setup" NoMinimize="yes">
-        <Control Id="Message" Type="Text" X="15" Y="20" Width="290" Height="35" Text="GridLogic setup completed." />
-        <Control Id="Close" Type="PushButton" X="240" Y="75" Width="65" Height="20" Default="yes" Cancel="yes" Text="Close">
+      <Dialog Id="SetupCompleteDlg" Width="370" Height="150" Title="GridLogic Setup" NoMinimize="yes">
+        <Control Id="Banner" Type="Bitmap" X="0" Y="0" Width="370" Height="56" TabSkip="no" Text="GridlogicBanner" />
+        <Control Id="Message" Type="Text" X="20" Y="70" Width="330" Height="36" Text="GridLogic is installed. You will find it in the Start menu, and it can open your .xlsx and .csv files." />
+        <Control Id="BottomLine" Type="Line" X="0" Y="112" Width="370" Height="0" />
+        <Control Id="Close" Type="PushButton" X="298" Y="122" Width="60" Height="18" Default="yes" Cancel="yes" Text="Close">
           <Publish Event="EndDialog" Value="Return" />
         </Control>
       </Dialog>
-      <Dialog Id="SetupCanceledDlg" Width="320" Height="110" Title="GridLogic Setup" NoMinimize="yes">
-        <Control Id="Message" Type="Text" X="15" Y="20" Width="290" Height="35" Text="GridLogic setup was canceled." />
-        <Control Id="Close" Type="PushButton" X="240" Y="75" Width="65" Height="20" Default="yes" Cancel="yes" Text="Close">
+      <Dialog Id="SetupCanceledDlg" Width="370" Height="150" Title="GridLogic Setup" NoMinimize="yes">
+        <Control Id="Banner" Type="Bitmap" X="0" Y="0" Width="370" Height="56" TabSkip="no" Text="GridlogicBanner" />
+        <Control Id="Message" Type="Text" X="20" Y="70" Width="330" Height="36" Text="GridLogic setup was canceled." />
+        <Control Id="BottomLine" Type="Line" X="0" Y="112" Width="370" Height="0" />
+        <Control Id="Close" Type="PushButton" X="298" Y="122" Width="60" Height="18" Default="yes" Cancel="yes" Text="Close">
           <Publish Event="EndDialog" Value="Return" />
         </Control>
       </Dialog>
-      <Dialog Id="SetupFailedDlg" Width="320" Height="110" Title="GridLogic Setup" NoMinimize="yes">
-        <Control Id="Message" Type="Text" X="15" Y="20" Width="290" Height="35" Text="GridLogic setup could not finish. See the installer message or log for details." />
-        <Control Id="Close" Type="PushButton" X="240" Y="75" Width="65" Height="20" Default="yes" Cancel="yes" Text="Close">
+      <Dialog Id="SetupFailedDlg" Width="370" Height="150" Title="GridLogic Setup" NoMinimize="yes">
+        <Control Id="Banner" Type="Bitmap" X="0" Y="0" Width="370" Height="56" TabSkip="no" Text="GridlogicBanner" />
+        <Control Id="Message" Type="Text" X="20" Y="70" Width="330" Height="36" Text="GridLogic setup could not finish. See the installer message or log for details." />
+        <Control Id="BottomLine" Type="Line" X="0" Y="112" Width="370" Height="0" />
+        <Control Id="Close" Type="PushButton" X="298" Y="122" Width="60" Height="18" Default="yes" Cancel="yes" Text="Close">
           <Publish Event="EndDialog" Value="Return" />
         </Control>
       </Dialog>
