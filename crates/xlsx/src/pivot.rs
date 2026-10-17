@@ -683,7 +683,7 @@ fn cache_xml(c: &Cache, records_rid: Option<&str>, sys: DateSystem) -> String {
         }
         _ => s.push_str(" saveData=\"0\""),
     }
-    s.push_str(" refreshOnLoad=\"1\" refreshedBy=\"GridCraft\" createdVersion=\"6\" refreshedVersion=\"6\" minRefreshableVersion=\"3\">");
+    s.push_str(" refreshOnLoad=\"1\" refreshedBy=\"GridLogic\" createdVersion=\"6\" refreshedVersion=\"6\" minRefreshableVersion=\"3\">");
     let _ = write!(s, "<cacheSource type=\"worksheet\">{}</cacheSource>", c.source_xml);
     let _ = write!(s, "<cacheFields count=\"{}\">", c.fields.len());
     for f in &c.fields {

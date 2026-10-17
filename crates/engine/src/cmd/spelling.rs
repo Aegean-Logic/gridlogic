@@ -123,7 +123,7 @@ fn suggestions(w: &str) -> Vec<String> {
 
 fn spelling(s: &mut Session, p: &Json) -> Result<Json> {
     if dictionary().is_empty() {
-        return Err(EngineError::Other("No dictionary is available on this system (GridCraft uses the system word list).".into()));
+        return Err(EngineError::Other("No dictionary is available on this system (GridLogic uses the system word list).".into()));
     }
     let si = target_sheet(s, p)?;
     let d = s.doc()?;

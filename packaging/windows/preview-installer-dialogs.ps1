@@ -53,7 +53,7 @@ public static class GridcraftMsiPreview {
             if (owner != process) return true;
             var title = new StringBuilder(128);
             GetWindowText(window, title, title.Capacity);
-            if (title.ToString() != "GridCraft Setup") return true;
+            if (title.ToString() != "GridLogic Setup") return true;
             found = window;
             return false;
         }, IntPtr.Zero);

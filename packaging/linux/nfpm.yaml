@@ -13,8 +13,8 @@ release: 1
 section: misc
 priority: optional
 maintainer: ${GRIDCRAFT_MAINTAINER}
-vendor: Learning Machines LLC
-homepage: https://getartcraft.com/apps/gridcraft
+vendor: Aegean Logic
+homepage: https://www.aegeanlogic.co.uk
 license: MIT OR Apache-2.0
 description: |-
   Open-source, native spreadsheet that works the way Excel users expect.

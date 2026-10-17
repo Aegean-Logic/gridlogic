@@ -1700,7 +1700,7 @@ struct ReportInput<'a> {
 }
 
 fn title(out: &mut Lines, kind: ReportKind, sheet: &str) -> u32 {
-    out.push((0, 0, Value::text(format!("GridCraft {} Report", kind.title())), true));
+    out.push((0, 0, Value::text(format!("GridLogic {} Report", kind.title())), true));
     out.push((1, 0, Value::text(format!("Worksheet: {sheet}")), false));
     3
 }
@@ -2333,7 +2333,7 @@ mod tests {
         assert_eq!(d.wb.active().unwrap().name, "Sheet1", "the model's sheet stays active");
         assert_eq!(saved(&s), "solver_opt", "the saved model follows its sheet");
         let a = "Answer Report 1";
-        assert_eq!(at(&s, a, "A1"), Value::text("GridCraft Answer Report"));
+        assert_eq!(at(&s, a, "A1"), Value::text("GridLogic Answer Report"));
         // Objective: $D$6 "Profit Used", from 0 to 36.
         let r = row_of(&s, a, "$D$6");
         assert_eq!(at(&s, a, &format!("C{}", r + 1)), Value::text("Profit Used"));

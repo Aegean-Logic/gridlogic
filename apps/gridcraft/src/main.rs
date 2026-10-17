@@ -224,7 +224,7 @@ fn icon() -> Option<egui::IconData> {
     #[cfg(target_os = "macos")]
     let bytes = include_bytes!("../../../assets/app-icon/gridcraft-macos-512.png");
     #[cfg(not(target_os = "macos"))]
-    let bytes = include_bytes!("../../../assets/app-icon/hicolor/256x256/apps/ai.storyteller.gridcraft.png");
+    let bytes = include_bytes!("../../../assets/app-icon/hicolor/256x256/apps/uk.co.aegeanlogic.gridlogic.png");
     let img = image::load_from_memory(bytes).ok()?.to_rgba8();
     Some(egui::IconData { width: img.width(), height: img.height(), rgba: img.into_raw() })
 }
@@ -252,7 +252,7 @@ fn main() -> eframe::Result<()> {
     }));
     let args: Vec<String> = std::env::args().skip(1).collect();
     if args.iter().any(|a| a == "--version" || a == "-V") {
-        println!("GridCraft {}", env!("CARGO_PKG_VERSION"));
+        println!("GridLogic {}", env!("CARGO_PKG_VERSION"));
         return Ok(());
     }
     let mut control_port: Option<u16> = std::env::var("GRIDCRAFT_CONTROL_PORT").ok().and_then(|p| p.parse().ok());
@@ -281,7 +281,7 @@ fn main() -> eframe::Result<()> {
     if let Some(logger) = logger {
         match log_dir().filter(|_| prefs_enabled()) {
             Some(dir) => match logger.attach_dir(&dir) {
-                Ok(path) => log::info!("GridCraft {}, log file {}", env!("CARGO_PKG_VERSION"), path.display()),
+                Ok(path) => log::info!("GridLogic {}, log file {}", env!("CARGO_PKG_VERSION"), path.display()),
                 // Standard error only by now (`attach_dir` gave up on the file); unlike `eprintln!`, never panics.
                 Err(e) => log::warn!("no log file: {e}"),
             },
@@ -309,10 +309,10 @@ fn main() -> eframe::Result<()> {
         app.open_path(f);
     }
     let mut viewport = egui::ViewportBuilder::default()
-        .with_title("GridCraft")
+        .with_title("GridLogic")
         .with_inner_size([1440.0, 900.0])
         .with_min_inner_size([640.0, 420.0])
-        .with_app_id("ai.storyteller.gridcraft")
+        .with_app_id("uk.co.aegeanlogic.gridlogic")
         .with_drag_and_drop(true);
     if cfg!(target_os = "macos") {
         viewport = viewport.with_fullsize_content_view(true).with_titlebar_shown(false).with_title_shown(false);
@@ -344,7 +344,7 @@ fn main() -> eframe::Result<()> {
     let pending = std::cell::Cell::new(Some(app));
     let run = |options: eframe::NativeOptions| {
         eframe::run_native(
-            "GridCraft",
+            "GridLogic",
             options,
             Box::new(|cc| {
                 let Some(mut app) = pending.take() else {
@@ -408,7 +408,7 @@ mod packaging_tests {
         assert!(mac.iter().any(|e| e == "xlsx"), "Info.plist.in extensions not found: {mac:?}");
         assert_eq!(mac, win);
         for ext in &mac {
-            assert!(FileKind::from_path(&format!("book.{ext}")).is_some(), "GridCraft doesn't open .{ext}");
+            assert!(FileKind::from_path(&format!("book.{ext}")).is_some(), "GridLogic doesn't open .{ext}");
         }
     }
 }

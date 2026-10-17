@@ -1,4 +1,6 @@
-# GridCraft — instructions for agents
+# GridLogic (GridCraft fork) — instructions for agents
+
+**This is Aegean Logic's fork, shipped as GridLogic.** Everything users see says GridLogic and carries Aegean Logic branding (`docs/brand/`). Internal identifiers keep the upstream name on purpose, to keep upstream merges cheap: crate and folder names (`gridcraft-*`), the preferences folder, the web bridge's `gridcraft:*` messages and the Nextcloud app id. Upstream (`storytold/gridcraft`) is the `upstream` remote. Fork work: co-editing (`docs/co-editing.md`) and the Nextcloud app (`../gridcraft-nextcloud`).
 
 GridCraft is a clean-room, open-source, Rust-native spreadsheet targeting Microsoft Excel parity — and superiority (speed, openness, agent control). It runs natively on macOS, Windows, Linux and BSD, and on the web via WASM. Siblings with the same conventions: `../designcraft` (InDesign-class, the closest reference), `../photocraft` (Photoshop), `../vectorcraft` (Illustrator), `../pdfcraft` (Acrobat), `../filmcraft` (Premiere), `../lightcraft` (Lightroom), `../effectcraft` (After Effects).
 
@@ -17,7 +19,7 @@ Standards and learnings shared across the crafting apps live in `../../craftrule
 - Prefer art generated in code: the UI icon set (`crates/ui-egui/src/icons.rs`), table and cell style palettes, themes and sample workbooks are drawn/defined in code and original.
 - Never copy Office's icons, ribbon artwork, theme XML, table-style definitions, templates, clip art or wording beyond feature names. Excel feature *names* (menu labels, function names) are fine.
 - Screenshots of Microsoft software are never committed (they live only in `plan/excel/screenshots/`).
-- The ArtCraft brand files in `docs/brand/` are ArtCraft trademarks under `docs/brand/LICENSE-brand.txt`, the one exception.
+- The Aegean Logic brand files in `docs/brand/` are Aegean Logic trademarks under `docs/brand/LICENSE-brand.txt`, the one exception.
 
 ## Never crash
 People trust GridCraft with their numbers; a crash loses their work. **This outranks feature work.** Standard: [`craftrules/standards/never-crash.md`](https://github.com/storytold/craftrules/blob/main/standards/never-crash.md).

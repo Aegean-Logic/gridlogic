@@ -1,6 +1,6 @@
 <#
 .SYNOPSIS
-  Build, sign and package GridCraft for Windows.
+  Build, sign and package GridLogic for Windows.
 
 .DESCRIPTION
   Produces, in $env:DIST (default: dist/release):
@@ -53,7 +53,7 @@ New-Item -ItemType Directory -Force -Path $Dist | Out-Null
 if (-not $env:GRIDCRAFT_BUILD_SHA) { $env:GRIDCRAFT_BUILD_SHA = (git -C $Root rev-parse HEAD 2>$null) }
 if (-not $env:GRIDCRAFT_BUILD_DATE) { $env:GRIDCRAFT_BUILD_DATE = (Get-Date).ToUniversalTime().ToString('yyyy-MM-dd') }
 
-Write-Output "GridCraft $Version for Windows $Arch ($Target)"
+Write-Output "GridLogic $Version for Windows $Arch ($Target)"
 
 if (-not $SkipBuild) {
   # Static CRT: no VC++ redistributable needed. Scoped to the target so host build scripts and

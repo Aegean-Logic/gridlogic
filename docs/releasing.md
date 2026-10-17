@@ -1,21 +1,21 @@
-# Releasing GridCraft
+# Releasing GridLogic
 
 Every push to the `release` branch runs `.github/workflows/release.yml`. The workflow builds
 signed installers for macOS, Windows, Linux, FreeBSD and the web, then creates or updates a
-**draft** GitHub Release named `GridCraft v<version>`. Nobody sees a draft until a maintainer
+**draft** GitHub Release named `GridLogic v<version>`. Nobody sees a draft until a maintainer
 publishes it.
 
-This is GridCraft's implementation of the shared [release playbook](release-playbook.md)
+This is GridLogic's implementation of the shared [release playbook](release-playbook.md)
 (craftrules `release/playbook.md`), copied from DesignCraft and renamed. User-facing names say
-**GridCraft**. Files, binaries and ids stay lowercase
-(`gridcraft-<version>-<platform>-<arch>.<ext>`, `ai.storyteller.gridcraft`).
+**GridLogic**. Files, binaries and ids stay lowercase
+(`gridcraft-<version>-<platform>-<arch>.<ext>`, `uk.co.aegeanlogic.gridlogic`).
 
 | App-specific value | Where |
 |---|---|
-| Display name `GridCraft`, binaries `gridcraft` + `gridcraft-cli` | every script and workflow |
-| Bundle / app id `ai.storyteller.gridcraft` | `packaging/macos/Info.plist.in`, `packaging/linux/*`, flatpak manifest |
+| Display name `GridLogic`, binaries `gridcraft` + `gridcraft-cli` | every script and workflow |
+| Bundle / app id `uk.co.aegeanlogic.gridlogic` | `packaging/macos/Info.plist.in`, `packaging/linux/*`, flatpak manifest |
 | WiX UpgradeCode `5511327B-F305-41BE-92D0-EB84944E7C4D` (fixed forever) | `packaging/windows/gridcraft.wxs` |
-| File types `.xlsx` `.xlsm` `.xlsb` `.ods` `.csv` `.tsv` | Info.plist (`CFBundleDocumentTypes`), WiX (ProgIds/OpenWithProgids), `.desktop` `MimeType=`, `ai.storyteller.gridcraft.mime.xml`, metainfo |
+| File types `.xlsx` `.xlsm` `.xlsb` `.ods` `.csv` `.tsv` | Info.plist (`CFBundleDocumentTypes`), WiX (ProgIds/OpenWithProgids), `.desktop` `MimeType=`, `uk.co.aegeanlogic.gridlogic.mime.xml`, metainfo |
 | Web app dir `apps/gridcraft-web` | `packaging/web/package.sh` |
 | App colour `#1f9d55` (ink `#147a40`), **proposed** | `assets/app-icon/README.md`, metainfo `<branding>` |
 
@@ -31,10 +31,10 @@ The pipeline references crates that don't exist yet; the first release run fails
   fails, and it checks that `gridcraft.exe` is a GUI-subsystem binary, so `main.rs` needs
   `#![cfg_attr(all(target_os = "windows", not(debug_assertions)), windows_subsystem = "windows")]`.
 - **Build info:** CI exports `GRIDCRAFT_BUILD_SHA` and `GRIDCRAFT_BUILD_DATE`; read them
-  with `option_env!` (fallback: "dev build") for `--version` and *Help › About GridCraft*.
+  with `option_env!` (fallback: "dev build") for `--version` and *Help › About GridLogic*.
 - **Runtime icon:** embed `assets/app-icon/gridcraft-macos-512.png` (macOS Dock) and
-  `hicolor/256x256/apps/ai.storyteller.gridcraft.png` (Windows/Linux) as the window icon, and
-  use `ai.storyteller.gridcraft` as the Wayland app id / `StartupWMClass`.
+  `hicolor/256x256/apps/uk.co.aegeanlogic.gridlogic.png` (Windows/Linux) as the window icon, and
+  use `uk.co.aegeanlogic.gridlogic` as the Wayland app id / `StartupWMClass`.
 - **`cargo xtask` alias:** the docs use `cargo xtask …`, which needs
   `.cargo/config.toml` with `[alias] xtask = "run --package xtask --"`. Until it exists, use
   `cargo run -p xtask -- …`. The workflows already call `cargo run -p xtask` directly.
@@ -52,7 +52,7 @@ The pipeline references crates that don't exist yet; the first release run fails
    Commit the change (`Cargo.toml` + `Cargo.lock`) through the normal review flow.
 2. **Merge `main` into `release`** (or fast-forward it) and push. The workflow starts by itself.
 3. **Wait for the draft.** Notarization and the FreeBSD VM are the slow parts. The Releases
-   page then has a draft `GridCraft v0.2.0`, tagged `v0.2.0` on the pushed commit, with every
+   page then has a draft `GridLogic v0.2.0`, tagged `v0.2.0` on the pushed commit, with every
    artifact and `SHA256SUMS.txt`. The notes are generated from the merged PRs.
 4. **Check it.** Download an installer or two and read the job summaries. Any `::warning::`
    there means a signing secret was missing and that artifact is unsigned.
@@ -90,12 +90,12 @@ and upload their artifacts, the environment refuses macOS and Windows, and no re
 ### macOS
 
 `packaging/macos/package.sh` builds `aarch64-apple-darwin` and `x86_64-apple-darwin` with
-`MACOSX_DEPLOYMENT_TARGET=11.0`, joins them with `lipo`, and assembles `GridCraft.app`:
+`MACOSX_DEPLOYMENT_TARGET=11.0`, joins them with `lipo`, and assembles `GridLogic.app`:
 
-- `Info.plist` comes from `Info.plist.in`: bundle id `ai.storyteller.gridcraft`,
+- `Info.plist` comes from `Info.plist.in`: bundle id `uk.co.aegeanlogic.gridlogic`,
   `LSMinimumSystemVersion` 11.0, `NSHighResolutionCapable`, category productivity, and
   `CFBundleDocumentTypes` for `.xlsx`, `.xlsm`, `.xlsb`, `.ods`, `.csv` and `.tsv` with rank
-  **Alternate**, so GridCraft is offered in *Open With* without taking over Numbers' (or another
+  **Alternate**, so GridLogic is offered in *Open With* without taking over Numbers' (or another
   app's) defaults. `.xlsm` and `.xlsb` get imported UTIs in case macOS doesn't know them.
 - **Signing** goes inside-out with the hardened runtime and a secure timestamp; no `--deep` on
   the final signature; `entitlements.plist` is deliberately empty.
@@ -103,7 +103,7 @@ and upload their artifacts, the environment refuses macOS and Windows, and no re
   stapled. The DMG (with an `Applications` link) is signed, notarized and stapled too, and
   checked with `codesign --verify --strict`, `stapler validate` and `spctl -a -vvv`.
   Its Finder window (background, icon size and positions) comes from
-  [`packaging/macos/dmg/`](../packaging/macos/dmg/README.md), and its volume is named `GridCraft`
+  [`packaging/macos/dmg/`](../packaging/macos/dmg/README.md), and its volume is named `GridLogic`
   without the version, which the window's background needs; the DMG file name keeps the version.
 - **CLI:** the universal `gridcraft-cli` is signed, zipped and notarized.
 
@@ -123,9 +123,9 @@ is GUI, `gridcraft-cli.exe` console), signs both executables, builds the MSI wit
 the MSI, and zips a portable build.
 
 - `gridcraft.wxs`: per-machine install into Program Files, advertised Start Menu shortcut, App
-  Paths (Win+R `gridcraft`). File types: ProgIds `GridCraft.Workbook` (`.xlsx`, `.xlsm`) and
-  `GridCraft.TextData` (`.csv`, `.tsv`), listed under each extension's `OpenWithProgids` and
-  in `Capabilities` + `RegisteredApplications`, so GridCraft appears in *Open with* and
+  Paths (Win+R `gridcraft`). File types: ProgIds `GridLogic.Workbook` (`.xlsx`, `.xlsm`) and
+  `GridLogic.TextData` (`.csv`, `.tsv`), listed under each extension's `OpenWithProgids` and
+  in `Capabilities` + `RegisteredApplications`, so GridLogic appears in *Open with* and
   *Settings › Default apps* but never silently becomes the default. The MSI version is the
   numeric `X.Y.Z`; same-version upgrades let release candidates replace each other.
 - **Desktop shortcut:** full installer UI offers an unchecked checkbox on a new installation.
@@ -160,7 +160,7 @@ Locally on Windows: `dotnet tool install -g wix --version 5.0.2`, then
 ### Linux
 
 `packaging/linux/package.sh` stages one FHS tree (both binaries,
-`ai.storyteller.gridcraft.desktop` with `MimeType=` for the four types, hicolor icons 16–512 px
+`uk.co.aegeanlogic.gridlogic.desktop` with `MimeType=` for the four types, hicolor icons 16–512 px
 + scalable SVG, AppStream metainfo, shared-mime-info) and builds the AppImage (appimagetool),
 `.deb` and `.rpm` (nfpm, `nfpm.yaml`) and `.tar.gz` from it. Built on Ubuntu 22.04, so the
 binaries need glibc ≥ 2.35. X11/Wayland/xkbcommon/Vulkan/EGL are loaded at runtime; the
@@ -172,11 +172,11 @@ matching `.zsync` is published beside it, so AppImageUpdate and AppImageLauncher
 changed blocks of the newest published release. appimagetool writes the `.zsync` when
 `zsyncmake` (the `zsync` package) is installed; without it the script warns and skips it.
 
-Flatpak: `packaging/linux/flatpak/ai.storyteller.gridcraft.yml` builds from source and is ready
+Flatpak: `packaging/linux/flatpak/uk.co.aegeanlogic.gridlogic.yml` builds from source and is ready
 for a Flathub submission (freedesktop 25.08; Wayland + X11 fallback, `dri`, IPC; Documents and
 Downloads; everything else through portals); build it by hand with the commands in its header.
 The single-file `.flatpak` on each release comes from `packaging/linux/flatpak-bundle.sh` and
-`ai.storyteller.gridcraft.bundle.yml`, which repackage the release's Linux tarball (no Rust
+`uk.co.aegeanlogic.gridlogic.bundle.yml`, which repackage the release's Linux tarball (no Rust
 build) and smoke-test the result in the sandbox. packaging-lint checks that both manifests
 agree on runtime and finish-args.
 
@@ -209,7 +209,7 @@ shows a `::warning::`. Never store these as org- or repo-level Actions secrets (
 
 | Secret | Used for |
 |---|---|
-| `APPLE_CERTIFICATE` | single-line base64 `.p12`: "Developer ID Application: Learning Machines LLC (DJ6XS33FX8)" |
+| `APPLE_CERTIFICATE` | single-line base64 `.p12`: "Developer ID Application: <organisation> (<team id>)" |
 | `APPLE_CERTIFICATE_PASSWORD` | password for that `.p12` |
 | `KEYCHAIN_PASSWORD` | password for the temporary CI keychain (random if unset) |
 | `APPLE_ID` | Apple ID used by `notarytool` |
@@ -272,7 +272,7 @@ the publisher.
 ## Icons
 
 `assets/app-icon/gridcraft.svg` is a **placeholder** (an original ledger-page drawing on
-GridCraft green) until the owner makes GridCraft's engraved creature portrait (craftrules
+GridLogic green) until the owner makes GridLogic's engraved creature portrait (craftrules
 `standards/icon-design.md`). `packaging/icons.sh` regenerates the 1024 px PNG, the macOS 512 px
 PNG, the `.icns` (iconutil), the `.ico` (`cargo xtask ico`) and the hicolor PNGs from it; it
 needs `resvg`. The outputs are committed, so packaging never needs those tools. Every file has a

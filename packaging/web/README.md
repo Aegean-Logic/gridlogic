@@ -1,4 +1,4 @@
-# Hosting GridCraft for the web
+# Hosting GridLogic for the web
 
 `gridcraft-web-<version>.zip` (from the GitHub release, or `packaging/web/package.sh`) holds a
 static site in `gridcraft-web-<version>/`:
@@ -31,7 +31,7 @@ hash, so they can be cached forever. Only `index.html` needs revalidation.
   `.js` files, and `no-cache` on `index.html`.
 - **HTTPS:** WebGPU (and the clipboard) only work in a secure context, which means `https://`
   or `http://localhost`. Over plain HTTP elsewhere, the app falls back to WebGL2.
-- **No special isolation headers:** GridCraft doesn't use `SharedArrayBuffer`, so it doesn't
+- **No special isolation headers:** GridLogic doesn't use `SharedArrayBuffer`, so it doesn't
   need `Cross-Origin-Opener-Policy` or `Cross-Origin-Embedder-Policy`. If your site already sends
   COEP `require-corp`, also send `Cross-Origin-Resource-Policy: same-origin` (or `cross-origin`
   when the files live on a CDN) on the app's files.
@@ -55,7 +55,7 @@ Local test: `python3 -m http.server 8765` inside the folder, then open http://lo
 ```html
 <iframe
   src="https://example.com/gridcraft/"
-  title="GridCraft spreadsheet"
+  title="GridLogic spreadsheet"
   style="width: 100%; height: 720px; border: 0;"
   allow="fullscreen; clipboard-read; clipboard-write"
   allowfullscreen>
@@ -75,10 +75,10 @@ Local test: `python3 -m http.server 8765` inside the folder, then open http://lo
 
 ## Opening and saving through the page (`?host=parent`)
 
-With `?host=parent` in the iframe `src`, GridCraft opens workbooks the embedding page sends it
+With `?host=parent` in the iframe `src`, GridLogic opens workbooks the embedding page sends it
 and hands the page every file it saves instead of downloading it. This suits a page with its own
-storage, such as a Nextcloud app. The page must be on the same origin as GridCraft: messages
-from anywhere else are ignored. In this mode GridCraft starts with an empty workbook.
+storage, such as a Nextcloud app. The page must be on the same origin as GridLogic: messages
+from anywhere else are ignored. In this mode GridLogic starts with an empty workbook.
 
 | Message | Direction | Fields |
 |---|---|---|
@@ -92,11 +92,11 @@ from anywhere else are ignored. In this mode GridCraft starts with an empty work
 
 Other query flags: `&author=Name` signs new notes and comments.
 
-**Save confirmation (`&ack=1`).** Without it, a workbook counts as saved as soon as GridCraft
+**Save confirmation (`&ack=1`).** Without it, a workbook counts as saved as soon as GridLogic
 hands it to the page, even if the page then fails to store it. With it, the workbook counts as
 saved only when the page answers `gridcraft:saved` with the save's `id`. It is then saved as it
 was when handed over, so edits made since stay unsaved. `gridcraft:saveFailed` leaves it unsaved
-and shows the user the page's `error`. An older GridCraft ignores the flag; it answers
+and shows the user the page's `error`. An older GridLogic ignores the flag; it answers
 `gridcraft:ready` without `ack: true`.
 
 ```js
@@ -117,7 +117,7 @@ addEventListener("message", async (event) => {
 
 ## Renderer selection
 
-GridCraft's web build is the same egui app as the desktop one, compiled to wasm
+GridLogic's web build is the same egui app as the desktop one, compiled to wasm
 (`apps/gridcraft-web`). It renders with the backend `apps/gridcraft-web` selects (WebGPU
 where available, otherwise WebGL2). If the web app adds URL flags to force a backend (as the
 sibling Craft apps do with `?webgl` / `?cpu`), document them here; they also work on the

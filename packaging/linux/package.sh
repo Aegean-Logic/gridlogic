@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Build and package GridCraft for Linux (<arch> is x86_64 or aarch64, or riscv64 when cross-compiling):
+# Build and package GridLogic for Linux (<arch> is x86_64 or aarch64, or riscv64 when cross-compiling):
 #
 #   $DIST/gridcraft-<version>-linux-<arch>.AppImage  any distro with glibc >= the build host's
 #   $DIST/gridcraft-<version>-linux-<arch>.AppImage.zsync  delta updates (needs zsyncmake)
@@ -17,7 +17,7 @@ set -euo pipefail
 # shellcheck source=../env.sh
 . "$(dirname "${BASH_SOURCE[0]}")/../env.sh"
 HERE="$ROOT/packaging/linux"
-APP_ID=ai.storyteller.gridcraft
+APP_ID=uk.co.aegeanlogic.gridlogic
 
 SKIP_BUILD=0
 FORMATS="appimage deb rpm tar"
@@ -37,10 +37,11 @@ case "$ARCH" in
   aarch64 | arm64) ARCH=aarch64; DEB_ARCH=arm64 ;;
   *) echo "unsupported architecture $ARCH" >&2; exit 2 ;;
 esac
-export GRIDCRAFT_MAINTAINER="${GRIDCRAFT_MAINTAINER:-GridCraft maintainers <gridcraft@storyteller.ai>}"
+: "${GRIDCRAFT_MAINTAINER:?set GRIDCRAFT_MAINTAINER, e.g. 'Aegean Logic <packages@example.com>', for the .deb/.rpm Maintainer field}"
+export GRIDCRAFT_MAINTAINER
 BASENAME="gridcraft-$VERSION-linux-$ARCH"
 
-echo "==> GridCraft $VERSION for Linux $ARCH ($FORMATS)"
+echo "==> GridLogic $VERSION for Linux $ARCH ($FORMATS)"
 
 if [ "$SKIP_BUILD" = 0 ]; then
   if [ -n "${CROSS_TARGET:-}" ]; then
@@ -99,7 +100,7 @@ fi
 
 # ---- AppImage -----------------------------------------------------------------------------------
 if has appimage; then
-  APPDIR="$WORK/GridCraft.AppDir"
+  APPDIR="$WORK/GridLogic.AppDir"
   cp -R "$STAGE" "$APPDIR"
   mv "$APPDIR/usr/share/doc" "$WORK/doc-unused"
   ln -s usr/bin/gridcraft "$APPDIR/AppRun"

@@ -2269,7 +2269,7 @@ fn interact(app: &mut SheetApp, ui: &mut egui::Ui, resp: &egui::Response, geo: &
                     // Ctrl (Cmd on macOS) swaps copying and extending, as in Excel.
                     let mode = if mods.command { "alternate" } else { "series" };
                     if let Err(e) = app.run("edit.autoFill", json!({"source": src.a1(), "target": t.a1(), "mode": mode})) {
-                        app.message = Some(("GridCraft".into(), crate::clean_error(&e)));
+                        app.message = Some(("GridLogic".into(), crate::clean_error(&e)));
                     }
                 }
             }
@@ -2290,7 +2290,7 @@ fn interact(app: &mut SheetApp, ui: &mut egui::Ui, resp: &egui::Response, geo: &
             }
             Drag::MoveCols { source, before: Some(before) } => {
                 if let Err(e) = app.run("sheet.moveColumns", json!({"cols": source.a1(), "before": before})) {
-                    app.message = Some(("GridCraft".into(), crate::clean_error(&e)));
+                    app.message = Some(("GridLogic".into(), crate::clean_error(&e)));
                 }
             }
             _ => {}

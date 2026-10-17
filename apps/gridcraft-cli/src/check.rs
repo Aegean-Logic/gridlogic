@@ -1231,7 +1231,7 @@ fn print_human(reports: &[FileReport], opts: &Options) {
     sigs.sort_by(|a, b| b.1.cmp(a.1).then(a.0.cmp(b.0)));
     if !sigs.is_empty() {
         outln!("");
-        outln!("mismatch signatures (expected → GridCraft):");
+        outln!("mismatch signatures (expected → GridLogic):");
         for (sig, n) in sigs.iter().take(opts.max_report.max(1)) {
             outln!("  {n:>8}  {sig}");
         }

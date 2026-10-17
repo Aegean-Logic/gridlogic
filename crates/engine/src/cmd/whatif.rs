@@ -403,7 +403,7 @@ fn store_scenarios(wb: &mut Workbook, list: &[Scenario]) {
             .map(|c| format!("\"{}\"", c.iter().collect::<String>().replace('"', "\"\"")))
             .collect::<Vec<_>>()
             .join("&"),
-        comment: "GridCraft Scenario Manager data".into(),
+        comment: "GridLogic Scenario Manager data".into(),
         hidden: true,
     });
 }

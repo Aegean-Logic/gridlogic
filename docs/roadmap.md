@@ -20,7 +20,7 @@ list is [`gaps.md`](gaps.md); numbers and method are in
 
 The core workflows a typical Excel user runs every day, checked end to end on the main platform
 (macOS desktop), including saving and reopening the work. Any "no", or a "partial" that blocks the
-workflow, would make GridCraft pre-alpha.
+workflow, would make GridLogic pre-alpha.
 
 | Core workflow | Works end to end? | Evidence | Hours to pass |
 |---|---|---|---|

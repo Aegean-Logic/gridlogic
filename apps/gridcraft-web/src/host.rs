@@ -107,7 +107,7 @@ impl Bridge {
             let replies = std::mem::take(&mut *self.replies.borrow_mut());
             for reply in replies {
                 if let Some(shown) = acks.apply(reply, &mut app.session) {
-                    app.message = Some(("GridCraft".into(), shown));
+                    app.message = Some(("GridLogic".into(), shown));
                 }
             }
         } else {

@@ -1,10 +1,10 @@
-# GridCraft roadmap
+# GridLogic roadmap
 
 **Stage: alpha** · next: beta, ~25 points of "ready for real work" and ~160–240 h away
 
 > **Last reviewed:** 2026-10-11 · **Last updated:** 2026-10-12 · **Change:** minor (rows auto-fit oversized fonts on open and whole-row/column formatting) · **Target:** Microsoft Excel (Microsoft 365)
 
-GridCraft aims at full Microsoft Excel parity, and at being better in places: faster, open (XLSX
+GridLogic aims at full Microsoft Excel parity, and at being better in places: faster, open (XLSX
 is the native format), fully scriptable by agents (MCP, control channel, CLI), and on the web.
 This page is the summary. The detail is in:
 
@@ -149,7 +149,7 @@ Ranked; estimates in Opus 5.5 agent-hours. Detail and the full beta-gate list in
 | 2026-10-12 | The selection outline stays visible when extended to the last row (Ctrl+Shift+Down): its sides are cut to the viewport instead of stroking a 20-million-point rectangle (#687) |
 | 2026-10-12 | File › Print selects a system printer, copies, duplex and grayscale, submits PDF jobs through craft-print on a worker and shows spooler errors; browser printing and PDF export remain available |
 | 2026-10-11 | Command-sequence fuzzing: random command sequences checked against undo/redo, XLSX round-trip and full recalculation; fixes for the table, legacy-array, spill, AutoSum, Watch Window and sheet-copy bugs it found |
-| 2026-10-11 | Password-protected workbooks open: GridCraft asks for the password and decrypts Agile and Standard encryption (#11) |
+| 2026-10-11 | Password-protected workbooks open: GridLogic asks for the password and decrypts Agile and Standard encryption (#11) |
 | 2026-10-11 | Text boxes keep their formatting: run size, bold, italic, typeface, text colour and outline, alignment, vertical anchor and "no outline" (#377) |
 | 2026-10-11 | Desktop printing opens the print PDF in the system viewer; Save As offers CSV, web page and PDF; macOS File › Properties opens File › Info (#370, #343) |
 | 2026-10-11 | Windows: DirectX 12 shaders compile with FXC, so a missing or stray `dxcompiler.dll` no longer stops the app at start (#339, #354) |

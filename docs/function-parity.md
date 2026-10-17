@@ -2,7 +2,7 @@
 
 > **Last reviewed:** 2026-10-11 · **Last updated:** 2026-10-13 · **Change:** minor (clearing large sparse ranges recalculates every changed cell's dependents, #1032) · **Target:** Microsoft Excel (Microsoft 365), Excel for Mac 16.113.4
 
-Excel's worksheet functions, category by category, against GridCraft's function library. Part of
+Excel's worksheet functions, category by category, against GridLogic's function library. Part of
 [target-app-parity.md](target-app-parity.md); gaps feed [gaps.md](gaps.md).
 
 ## How this is measured
@@ -80,7 +80,7 @@ PIVOTBY, REGEXTEST…) are all present.
 | Implicit intersection `@`, legacy CSE array formulas | done; legacy array range fill (PR #156) |
 | Trim references `A1:.E10` (trailing), `A1.:E10` (leading), `A1.:.E10` (both), also on whole rows/columns (`A:.A`) | done; evaluated as `TRIMRANGE(range, code, code)`, adjusted on insert/delete; files store `_xlfn.TRIMRANGE(range,code,code)` (Excel's own file spelling unconfirmed in public docs), `_xlfn._TRO_ALL/_TRO_LEADING/_TRO_TRAILING(...)` read too |
 | LET, LAMBDA, named LAMBDAs, ISOMITTED, MAP/REDUCE/SCAN/BYROW/BYCOL/MAKEARRAY | done |
-| Iterative calculation for circular references | done: with Enable Iterative Calculation on (`formulas.calculationOptions` `{iterative, maxIterations, maxChange}`, saved as `<calcPr iterate iterateCount iterateDelta>`), loops are evaluated again from their previous values (blank = 0) until no cell on a loop changes by Maximum Change or Maximum Iterations is reached; off, cycles give `#CIRC!`. Differences: no Options dialog yet (command only); GridCraft recalculates on open, so a loop that never settles (`=A1+1`) advances again each time the file is opened |
+| Iterative calculation for circular references | done: with Enable Iterative Calculation on (`formulas.calculationOptions` `{iterative, maxIterations, maxChange}`, saved as `<calcPr iterate iterateCount iterateDelta>`), loops are evaluated again from their previous values (blank = 0) until no cell on a loop changes by Maximum Change or Maximum Iterations is reached; off, cycles give `#CIRC!`. Differences: no Options dialog yet (command only); GridLogic recalculates on open, so a loop that never settles (`=A1+1`) advances again each time the file is opened |
 | 15-significant-digit comparison semantics | **missing** (#57: `=0.1+0.2=0.3` is FALSE) |
 | External workbook references (`[Book.xlsx]Sheet1!A1`) | parsed; links dropped on open, no update |
 | Localized function names and `;` separators | **missing** (#45); en-US only |

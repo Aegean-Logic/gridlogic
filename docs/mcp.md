@@ -1,6 +1,6 @@
-# GridCraft MCP server
+# GridLogic MCP server
 
-`gridcraft-cli mcp` exposes GridCraft to AI agents over the [Model Context Protocol](https://modelcontextprotocol.io):
+`gridcraft-cli mcp` exposes GridLogic to AI agents over the [Model Context Protocol](https://modelcontextprotocol.io):
 newline-delimited JSON-RPC 2.0 on stdin/stdout (protocol `2025-06-18`; `2025-03-26` and `2024-11-05` clients are
 answered in their own version). Logs go to stderr.
 

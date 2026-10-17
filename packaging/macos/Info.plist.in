@@ -7,13 +7,13 @@
   <key>CFBundleDevelopmentRegion</key>
   <string>en</string>
   <key>CFBundleDisplayName</key>
-  <string>GridCraft</string>
+  <string>GridLogic</string>
   <key>CFBundleName</key>
-  <string>GridCraft</string>
+  <string>GridLogic</string>
   <key>CFBundleExecutable</key>
-  <string>GridCraft</string>
+  <string>GridLogic</string>
   <key>CFBundleIdentifier</key>
-  <string>ai.storyteller.gridcraft</string>
+  <string>uk.co.aegeanlogic.gridlogic</string>
   <key>CFBundleInfoDictionaryVersion</key>
   <string>6.0</string>
   <key>CFBundlePackageType</key>
@@ -24,12 +24,12 @@
   <string>@SHORT_VERSION@</string>
   <key>CFBundleVersion</key>
   <string>@SHORT_VERSION@</string>
-  <key>GridCraftVersion</key>
+  <key>GridLogicVersion</key>
   <string>@VERSION@</string>
-  <key>GridCraftBuildCommit</key>
+  <key>GridLogicBuildCommit</key>
   <string>@BUILD_SHA@</string>
   <key>CFBundleIconFile</key>
-  <string>GridCraft</string>
+  <string>GridLogic</string>
   <key>LSApplicationCategoryType</key>
   <string>public.app-category.productivity</string>
   <!-- Must match MACOSX_DEPLOYMENT_TARGET in package.sh. Big Sur is the first release on
@@ -43,9 +43,9 @@
   <key>NSRequiresAquaSystemAppearance</key>
   <false/>
   <key>NSHumanReadableCopyright</key>
-  <string>Copyright © the GridCraft authors. MIT OR Apache-2.0.</string>
+  <string>Copyright © Aegean Logic and the GridLogic authors. MIT OR Apache-2.0.</string>
 
-  <!-- Files GridCraft opens. Rank Alternate: it's offered under "Open With" without taking
+  <!-- Files GridLogic opens. Rank Alternate: it's offered under "Open With" without taking
        over the default app (Numbers, another spreadsheet) for these types. -->
   <key>CFBundleDocumentTypes</key>
   <array>

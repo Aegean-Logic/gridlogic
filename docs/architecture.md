@@ -2,7 +2,7 @@
 
 > **Last reviewed:** 2026-10-10 · **Last updated:** 2026-10-10 · **Change:** major (created from the code on main; supersedes the local-only plan/architecture.md for committed docs) · **Target:** Microsoft Excel (Microsoft 365)
 
-How GridCraft is built today. Rules for contributors are in [`AGENTS.md`](../AGENTS.md).
+How GridLogic is built today. Rules for contributors are in [`AGENTS.md`](../AGENTS.md).
 
 ## Workspace and layering
 

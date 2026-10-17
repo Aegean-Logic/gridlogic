@@ -337,7 +337,7 @@ pub(super) fn decode(rgce: &[u8], rgcb: &[u8], base: CellRef, mode: Mode, links:
                 // A cell using a name the import drops would calculate to #NAME?: keep its
                 // saved result instead, as for references to other workbooks.
                 if mode != Mode::Name && i.and_then(|i| links.skipped.get(i)) == Some(&true) {
-                    return Err(Unsupported("defined names GridCraft skipped"));
+                    return Err(Unsupported("defined names GridLogic skipped"));
                 }
                 push(&mut stack, kids, Expr::Name(name.clone()))?;
             }
