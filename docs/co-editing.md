@@ -1,7 +1,8 @@
 # Real-time co-editing: design
 
 Status: phases 1–4 done (engine, transport through Nextcloud, presence and collaborative undo,
-hardening), 2026-10-17. Fork-specific (Aegean Office). Not upstream behaviour.
+hardening), 2026-10-17; sessions keep to one co-editing protocol (`collab::PROTOCOL`), 2026-10-18.
+Fork-specific (Aegean Office). Not upstream behaviour.
 
 ## Where it stands
 
@@ -100,6 +101,15 @@ Decisions made while building it:
 - **A copy missing log history must rejoin** rather than guess: placing an op without the
   entries its author hadn't seen would diverge. The server must give a joining copy the log
   from its checkpoint on.
+- **A session keeps to one co-editing protocol** (`collab::PROTOCOL`, raised whenever an op
+  carries something an older build would misread or drop). Every copy joins with it (the browser's
+  from `gridcraft:ready`'s `collab`, the desktop app its own), never with the app version, which
+  the desktop app doesn't share. The Nextcloud app keeps the newest per session and answers a
+  member on an older one `{rejoin, outdated}` (gridcraft-nextcloud 0.9.0): a browser tab reloads,
+  which brings the newer editor; a page that can't get newer that way says so after one reload a
+  minute, and the desktop app opens the workbook unshared, or stops sharing, with a message.
+  Without this a tab left open across an upgrade misreads newer ops and can write a checkpoint
+  that loses the others' edits (seen in SlideLogic).
 - **Received ops apply incrementally** (phase 4). A full rebuild happens only after a shortcut
   taken while this person's edits were pending.
 

@@ -12,7 +12,7 @@ use std::collections::VecDeque;
 use std::sync::{Arc, Mutex, MutexGuard};
 use std::time::Duration;
 
-use gridcraft_engine::collab::{Incoming, Op};
+use gridcraft_engine::collab::{Incoming, Op, PROTOCOL};
 use gridcraft_engine::core::{CellRef, RangeRef};
 use gridcraft_engine::model::Workbook;
 use gridcraft_ui_egui::{Presence, SheetApp};
@@ -28,6 +28,18 @@ const CHECKPOINT_SECONDS: f64 = 30.0;
 const SAVE_CHECKPOINT_SECONDS: f64 = 10.0;
 /// How often to ask for others' edits.
 const POLL: Duration = Duration::from_millis(600);
+
+/// Said when the session is on a newer GridLogic than this one, whose edits this one would
+/// misread: at joining, and when someone joins with one.
+pub(super) const OUTDATED: &str =
+    "Someone is editing this workbook with a newer GridLogic, so it opened here without editing together. Update GridLogic to edit it with them.";
+const OUTDATED_NOW: &str = "Someone joined with a newer GridLogic, so editing together stopped here. Update GridLogic to go on editing with them.";
+
+/// Whether the session's build (`join`'s `build`: the newest co-editing protocol in it) is newer
+/// than this one's.
+fn newer_than_mine(build: Option<&Json>) -> bool {
+    build.and_then(Json::as_str).and_then(|b| b.trim().parse::<u32>().ok()).is_some_and(|b| b > PROTOCOL)
+}
 /// The browser's colours for people, by client id (`collab.js`).
 const COLORS: [(u8, u8, u8); 8] = [
     (0xC0, 0x39, 0x2B),
@@ -107,16 +119,22 @@ fn entries(v: Option<&Json>) -> Vec<Incoming> {
 /// session saved a newer version since; download again.
 pub(super) fn join(nc: &Connection, file_id: u64, etag: &str, remote: &str) -> Result<Option<Joined>, String> {
     let etag = etag.trim_start_matches("W/").trim_matches('"').to_string();
-    let r = nc.app("POST", "collab/join", &json!({"fileId": file_id, "etag": etag}))?;
+    // `build`: what this build's ops mean; the server sends anyone on an older one to reload.
+    let r = nc.app("POST", "collab/join", &json!({"fileId": file_id, "etag": etag, "build": PROTOCOL.to_string()}))?;
     if r.get("retry").and_then(Json::as_bool) == Some(true) {
         return Ok(None);
     }
     let num = |k: &str| r.get(k).and_then(Json::as_u64).ok_or_else(|| format!("Nextcloud's co-editing answer had no {k}."));
+    let (session_id, client, seq) = (num("sessionId")?, num("client")?, num("seq")?);
+    if newer_than_mine(r.get("build")) {
+        let _ = nc.app("POST", "collab/leave", &json!({"sessionId": session_id, "client": client}));
+        return Err(OUTDATED.into());
+    }
     let sheet_ids = r.get("sheetIds").and_then(Json::as_str).filter(|s| !s.is_empty()).and_then(|s| serde_json::from_str(s).ok()).unwrap_or_default();
     Ok(Some(Joined {
-        session_id: num("sessionId")?,
-        client: num("client")?,
-        seq: num("seq")?,
+        session_id,
+        client,
+        seq,
         entries: entries(r.get("entries")),
         members: r.get("members").cloned().and_then(|m| serde_json::from_value(m).ok()).unwrap_or_default(),
         sheet_ids,
@@ -395,8 +413,8 @@ impl Worker {
                     link(&self.link).outbox.clear();
                     self.event(Event::Notice("You can view this workbook but not edit it: your changes aren't shared.".into(), true));
                 }
-                Ok((409, _)) => {
-                    self.event(Event::Rejoin);
+                Ok((409, body)) => {
+                    self.event(if outdated(&body) { Event::End(OUTDATED_NOW.into()) } else { Event::Rejoin });
                     return false;
                 }
                 Ok((400, body)) => {
@@ -450,8 +468,8 @@ impl Worker {
                 self.ctx.request_repaint();
                 Some(more)
             }
-            Ok((409, _)) => {
-                self.event(Event::Rejoin);
+            Ok((409, body)) => {
+                self.event(if outdated(&body) { Event::End(OUTDATED_NOW.into()) } else { Event::Rejoin });
                 None
             }
             _ => Some(false),
@@ -513,6 +531,11 @@ impl Worker {
     }
 }
 
+/// A 409 that says a newer GridLogic is in the session: rejoining wouldn't help.
+fn outdated(body: &Json) -> bool {
+    body.get("outdated").and_then(Json::as_bool) == Some(true)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -526,6 +549,17 @@ mod tests {
         ])));
         assert_eq!(e.len(), 2, "an entry without a position is dropped");
         assert_eq!(e[1].op, Op::default(), "an op that doesn't parse is a no-op");
+    }
+
+    #[test]
+    fn a_newer_protocol_in_the_session_is_told_apart() {
+        let newer = (PROTOCOL + 1).to_string();
+        assert!(newer_than_mine(Some(&json!(newer))));
+        assert!(!newer_than_mine(Some(&json!(PROTOCOL.to_string()))), "the same protocol edits together");
+        assert!(!newer_than_mine(Some(&json!(""))), "a session nobody named a protocol for");
+        assert!(!newer_than_mine(None), "a server from before protocols");
+        assert!(outdated(&json!({"rejoin": true, "outdated": true})));
+        assert!(!outdated(&json!({"rejoin": true})), "a lost session is rejoined");
     }
 
     #[test]
