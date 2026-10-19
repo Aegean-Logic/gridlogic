@@ -23,6 +23,12 @@ use serde_json::Value as Json;
 
 use crate::{DocState, EngineError, Result, Session};
 
+/// What this build's ops mean, for hosts to keep a session to one meaning: a copy that reads ops
+/// differently from the others (it ignores a part they send) drifts from them unseen, and can save
+/// its copy over their work. Raise it whenever an op carries something an older build would
+/// misread or drop. 1: structural edits, then a content patch of cells, lines and fields.
+pub const PROTOCOL: u32 = 1;
+
 /// The largest edit shared with the others (its op as JSON). A bigger one (a paste of hundreds of
 /// thousands of cells) is taken back with a message to make it in smaller steps: the server and
 /// every other copy would have to swallow it whole.

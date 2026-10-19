@@ -19,6 +19,8 @@
 //!
 //! Co-editing (the page runs the session with the server; `collab_msg` checks what it sends):
 //!
+//! - `gridcraft:ready` says `{ collab: n }`: this build can co-edit, with ops as
+//!   `collab::PROTOCOL` n means them (the page joins with it: a session keeps to one).
 //! - `gridcraft:collab:start` (from the parent): `{ client, seq, readOnly?, json? }`, after
 //!   `gridcraft:open`: the workbook just opened is the shared one as of log position `seq`;
 //!   `json`, the session's sheet ids in order as kept with the checkpoint (XLSX loses them).
@@ -196,7 +198,8 @@ impl Bridge {
             ("type", "gridcraft:ready".into()),
             ("version", env!("CARGO_PKG_VERSION").into()),
             ("ack", self.acks.is_some().into()),
-            ("collab", true.into()),
+            // The co-editing protocol (truthy for pages that only ask whether it co-edits).
+            ("collab", JsValue::from_f64(f64::from(gridcraft_engine::collab::PROTOCOL))),
         ]);
     }
 

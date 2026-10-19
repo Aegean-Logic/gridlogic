@@ -82,7 +82,7 @@ from anywhere else are ignored. In this mode GridLogic starts with an empty work
 
 | Message | Direction | Fields |
 |---|---|---|
-| `gridcraft:ready` | to the page | `version`; `ack` (true with `&ack=1`); `collab` (true: this build can co-edit). Send the file to open after this. |
+| `gridcraft:ready` | to the page | `version`; `ack` (true with `&ack=1`); `collab` (this build can co-edit: its co-editing protocol, `collab::PROTOCOL`, a number to join a session with; earlier builds said `true`). Send the file to open after this. |
 | `gridcraft:open` | from the page | `name`, `bytes` (`ArrayBuffer` or `Uint8Array`) |
 | `gridcraft:save` | to the page | `name`, `bytes` (a transferred `ArrayBuffer`); `id` with `&ack=1`. Sent for Save, Save As (.xlsx) and Export as PDF. |
 | `gridcraft:saved` | from the page (`&ack=1`) | `id`; optional `name` when the page stored the file under another name |
