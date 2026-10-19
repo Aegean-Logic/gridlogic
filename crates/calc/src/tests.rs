@@ -369,6 +369,24 @@ fn spill_into_the_old_area_of_a_blocked_neighbour() {
 }
 
 #[test]
+fn colliding_arrays_keep_the_spill_that_was_there_through_a_full_recalc() {
+    // A2's array spills across B2 first; B1's, down through B2, is #SPILL!. A full recalculation
+    // lays both out again and must not hand B2 to B1. D1 reads B3, which only B1's array would
+    // cover: the full recalculation evaluates it while B1's array still looks like it spills.
+    let mut t = T::new();
+    t.set("A2", "=SEQUENCE(1,3)");
+    t.set("B1", "=SEQUENCE(3)");
+    t.set("D1", "=B3");
+    for what in ["incrementally", "after a full recalc"] {
+        assert_eq!([t.num("A2"), t.num("B2"), t.num("C2")], [1.0, 2.0, 3.0], "{what}");
+        assert_eq!(t.get("B1"), Value::Error(CellError::Spill), "{what}");
+        assert_eq!(t.get("B3"), Value::Empty, "{what}");
+        assert_eq!(t.num("D1"), 0.0, "{what}");
+        t.calc.recalc_all(&mut t.wb);
+    }
+}
+
+#[test]
 fn arrays_do_not_spill_in_tables() {
     // Excel: spilled array formulas aren't supported in tables.
     let mut t = T::new();
