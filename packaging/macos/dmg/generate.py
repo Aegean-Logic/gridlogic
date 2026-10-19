@@ -28,7 +28,7 @@ VOLUME = "GridLogic"
 WIDTH, HEIGHT = 660, 400  # window content, pt; the background's 1x size
 TITLE_BAR = 32
 ICON_SIZE = 128
-PALETTE = 16  # colours in background.tiff
+PALETTE = 24  # colours in background.tiff; 16 merges the icon's white sheet and grid into the marble
 ICONS = {"GridLogic.app": (326, 205), "Applications": (574, 205)}
 # A fixed date for the alias and the colour profile. Finder never matches it against the image
 # (each build is a new volume): it finds the background by volume name and path.
@@ -68,7 +68,7 @@ def write_tiff(svg, out):
             quantize(render(svg, WIDTH * s, os.path.join(tmp, f"{s}x.png"))) for s in (1, 2)
         )
     two.encoderinfo = {"dpi": (144, 144)}  # the rest as the first page
-    # Opaque 16-colour palette, Deflate: the artwork is three inks plus antialiasing, and a palette
+    # Opaque 24-colour palette, Deflate: the artwork is a few flat inks plus antialiasing, and a palette
     # keeps the file under ~100 KB (repository assets must stay small). As PhotoCraft's.
     one.save(
         out,
