@@ -21,8 +21,8 @@ pub struct Ctx<'a> {
     pub palette: Vec<u32>,
     pub date_system: DateSystem,
     pub styles: StyleTable,
-    /// Threaded-comment person id → display name.
-    pub persons: std::collections::HashMap<String, String>,
+    /// Threaded-comment person id → the person.
+    pub persons: std::collections::HashMap<String, gridcraft_model::Person>,
     pub next_id: u32,
     /// Custom number formats from the styles part, by id.
     pub num_fmts: std::collections::HashMap<u32, String>,
@@ -163,7 +163,12 @@ pub fn read_xlsx(bytes: &[u8]) -> Result<(Workbook, ReadReport), IoError> {
     {
         for p in x.kids("person") {
             if let (Some(id), Some(n)) = (p.attr("id"), p.attr("displayName")) {
-                cx.persons.insert(id.to_string(), n.to_string());
+                let person = gridcraft_model::Person {
+                    name: n.to_string(),
+                    user_id: p.attr("userId").unwrap_or("").to_string(),
+                    provider: p.attr("providerId").unwrap_or("").to_string(),
+                };
+                cx.persons.insert(id.to_string(), person);
             }
         }
     }

@@ -3064,10 +3064,10 @@ pub(crate) fn paint_overlays(
                 egui::Frame::popup(ui.style()).fill(if cm.threaded { Color32::WHITE } else { Color32::from_rgb(0xFF, 0xFF, 0xE1) }).show(ui, |ui| {
                     ui.set_max_width(240.0);
                     ui.label(egui::RichText::new(format!("{}:", cm.author)).strong().color(Color32::BLACK));
-                    ui.label(egui::RichText::new(&cm.text).color(Color32::BLACK));
-                    for (a, t) in &cm.replies {
+                    crate::mentions::label(ui, "", &cm.text, cm.mentions_of(0), Color32::BLACK);
+                    for (k, (a, t)) in cm.replies.iter().enumerate() {
                         ui.separator();
-                        ui.label(egui::RichText::new(format!("{a}: {t}")).color(Color32::BLACK));
+                        crate::mentions::label(ui, &format!("{a}: "), t, cm.mentions_of(k + 1), Color32::BLACK);
                     }
                 });
             },

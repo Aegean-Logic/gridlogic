@@ -41,7 +41,8 @@
 //! Sharing (the Share dialog's cloud is the page, which has the user's Nextcloud session):
 //!
 //! - `gridcraft:cloud` (to the parent): `{ id, op, params }`, an operation of
-//!   `gridcraft_ui_egui::share::Cloud` (`params` as JSON text).
+//!   `gridcraft_ui_egui::share::Cloud` or `gridcraft_ui_egui::mentions` (`people.search`,
+//!   `mention.notify`) (`params` as JSON text).
 //! - `gridcraft:cloud:reply` (from the parent): `{ id, ok, json?, error? }`, its answer (`json`
 //!   as JSON text when `ok`, else `error`).
 //!

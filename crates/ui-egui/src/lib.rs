@@ -23,6 +23,7 @@ pub mod i18n;
 pub mod icons;
 pub mod keymap;
 pub mod keytips;
+pub mod mentions;
 pub mod outline;
 pub mod panes;
 pub mod paper_view;
@@ -235,6 +236,8 @@ pub struct SheetApp {
     pub dialog: Option<dialogs::Dialog>,
     /// The Share dialog, when open.
     pub share: Option<share::ShareDialog>,
+    /// `@mentions` in comments: the people picker and the notifications under way.
+    pub mentions: mentions::Mentions,
     /// Nextcloud in the File view (account, Open, Save As).
     pub cloud_files: cloud_files::CloudFiles,
     /// Workbooks in Nextcloud (by document uid) whose AutoSave was switched off; it's on for
@@ -302,6 +305,7 @@ impl SheetApp {
             dialog: None,
             share: None,
             cloud_files: Default::default(),
+            mentions: Default::default(),
             cloud_autosave_off: Default::default(),
             backstage: None,
             message: None,
@@ -1196,6 +1200,7 @@ impl SheetApp {
         }
         dialogs::show(self, &ctx);
         share::show(self, &ctx);
+        mentions::show(self, &ctx);
         cloud_files::show_conflict(self, &ctx);
         widgets::message_box(self, &ctx);
         widgets::toast(self, &ctx);

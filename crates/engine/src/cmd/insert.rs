@@ -167,10 +167,16 @@ pub fn specs() -> Vec<CommandSpec> {
             open_link
         ),
         cmd!("review.newNote", "New Note", ["Review", "Notes"], Some("Shift+F2"), "{cell?, text, author?}", has_doc, |s, p| comment(s, p, false)),
-        cmd!("review.newComment", "New Comment", ["Review", "Comments"], Some("Cmd+Shift+F2"), "{cell?, text, author?}", has_doc, |s, p| comment(
-            s, p, true
-        )),
-        cmd!("review.replyComment", "Reply", [], None, "{cell?, text, author?}", has_doc, reply_comment),
+        cmd!(
+            "review.newComment",
+            "New Comment",
+            ["Review", "Comments"],
+            Some("Cmd+Shift+F2"),
+            "{cell?, text, author?, mentions?: [{name, id, provider?}]} (an existing thread keeps its replies; each person's first `@Name` in the text becomes a mention)",
+            has_doc,
+            |s, p| comment(s, p, true)
+        ),
+        cmd!("review.replyComment", "Reply", [], None, "{cell?, text, author?, mentions?: [{name, id, provider?}]}", has_doc, reply_comment),
         cmd!("review.resolveComment", "Resolve Thread", [], None, "{cell?, resolved?: true}", has_doc, resolve_comment),
         cmd!("review.deleteComment", "Delete Comment", ["Review", "Comments"], None, "{cell?}", has_doc, delete_comment),
         cmd!("review.showNote", "Show/Hide Note", ["Review", "Notes"], None, "{cell?}", has_doc, show_note),
@@ -1246,12 +1252,31 @@ fn comment(s: &mut Session, p: &Json, threaded: bool) -> Result<Json> {
     let at = cell_param_on(s, p, "cell", sheet)?.unwrap_or(s.doc()?.selection.active);
     let text = str_param(p, "text").unwrap_or("").to_string();
     let author = str_param(p, "author").map(str::to_string).unwrap_or_else(|| s.prefs.user_name.clone());
+    // Notes hold no mentions, as in Excel.
+    let mentions = if threaded { locate_mentions(&text, &people_param(p)) } else { vec![] };
     edit(s, |cx| {
-        cx.sheet_mut(sheet)?.comments.insert(
-            at,
-            Comment { author: author.clone(), text: text.clone(), replies: vec![], threaded, resolved: false, visible: false, dates: vec![] },
-        );
-        Ok(json!({"cell": at.a1()}))
+        let sh = cx.sheet_mut(sheet)?;
+        let name = sh.name.clone();
+        let mut c = Comment {
+            author: author.clone(),
+            text: text.clone(),
+            replies: vec![],
+            threaded,
+            resolved: false,
+            visible: false,
+            dates: vec![],
+            mentions: vec![],
+        };
+        // Editing a thread's first entry keeps its replies; only people newly mentioned are told.
+        let mut known: Vec<Person> = vec![];
+        if let Some(old) = sh.comments.get(&at).filter(|o| o.threaded && threaded) {
+            known = old.mentions_of(0).iter().map(|m| m.person.clone()).collect();
+            c = Comment { author: old.author.clone(), text: text.clone(), ..old.clone() };
+        }
+        let people = mentions.iter().filter(|m| !known.contains(&m.person)).map(|m| person_json(&m.person)).collect::<Vec<_>>();
+        c.set_mentions(0, mentions.clone());
+        sh.comments.insert(at, c);
+        Ok(json!({"cell": at.a1(), "anchor": comment_anchor(&name, at), "mentions": people}))
     })
 }
 
@@ -1260,11 +1285,48 @@ fn reply_comment(s: &mut Session, p: &Json) -> Result<Json> {
     let at = cell_param_on(s, p, "cell", sheet)?.unwrap_or(s.doc()?.selection.active);
     let text = str_param(p, "text").unwrap_or("").to_string();
     let author = str_param(p, "author").map(str::to_string).unwrap_or_else(|| s.prefs.user_name.clone());
+    let mentions = locate_mentions(&text, &people_param(p));
     edit(s, |cx| {
-        let c = cx.sheet_mut(sheet)?.comments.get_mut(&at).ok_or_else(|| EngineError::Other("There's no comment in this cell.".into()))?;
+        let sh = cx.sheet_mut(sheet)?;
+        let name = sh.name.clone();
+        let c = sh.comments.get_mut(&at).ok_or_else(|| EngineError::Other("There's no comment in this cell.".into()))?;
         c.replies.push((author.clone(), text.clone()));
-        Ok(Json::Null)
+        let k = c.replies.len();
+        let people = mentions.iter().map(|m| person_json(&m.person)).collect::<Vec<_>>();
+        c.set_mentions(k, mentions.clone());
+        Ok(json!({"cell": at.a1(), "anchor": comment_anchor(&name, at), "mentions": people}))
     })
+}
+
+/// At most this many people can be mentioned in one comment entry.
+const MAX_MENTIONED: usize = 32;
+
+/// The `mentions` param: `[{name, id, provider?}]`, people without a name left out.
+fn people_param(p: &Json) -> Vec<Person> {
+    let Some(list) = p.get("mentions").and_then(Json::as_array) else { return vec![] };
+    let text = |v: &Json, k: &str, max: usize| v.get(k).and_then(Json::as_str).map(|t| t.chars().take(max).collect::<String>()).unwrap_or_default();
+    list.iter()
+        .take(MAX_MENTIONED)
+        .map(|v| Person { name: text(v, "name", 255), user_id: text(v, "id", 255), provider: text(v, "provider", 64) })
+        .map(|mut p| {
+            if p.provider.is_empty() && !p.user_id.is_empty() {
+                p.provider = "Nextcloud".into();
+            }
+            p
+        })
+        .filter(|p| !p.name.trim().is_empty())
+        .collect()
+}
+
+fn person_json(p: &Person) -> Json {
+    json!({"name": p.name, "id": p.user_id, "provider": p.provider})
+}
+
+/// A comment's address for links into the workbook (`Sheet1!B3`, `'My sheet'!B3`): what the host
+/// passes back as `?comment=` when someone opens a mention's link.
+pub fn comment_anchor(sheet: &str, at: CellRef) -> String {
+    let plain = !sheet.is_empty() && sheet.chars().all(|c| c.is_alphanumeric() || c == '_') && !sheet.starts_with(|c: char| c.is_ascii_digit());
+    if plain { format!("{sheet}!{}", at.a1()) } else { format!("'{}'!{}", sheet.replace('\'', "''"), at.a1()) }
 }
 
 fn resolve_comment(s: &mut Session, p: &Json) -> Result<Json> {

@@ -75,12 +75,12 @@ fn comments(app: &mut SheetApp, ui: &mut Ui) {
                         ui.label(egui::RichText::new("Resolved").small().color(Color32::from_rgb(0x10, 0x7C, 0x41)));
                     }
                 });
-                ui.label(&c.text);
-                for (a, txt) in &c.replies {
-                    ui.label(egui::RichText::new(format!("↳ {a}: {txt}")).color(Color32::from_gray(60)));
+                crate::mentions::label(ui, "", &c.text, c.mentions_of(0), Color32::from_gray(20));
+                for (k, (a, txt)) in c.replies.iter().enumerate() {
+                    crate::mentions::label(ui, &format!("↳ {a}: "), txt, c.mentions_of(k + 1), Color32::from_gray(60));
                 }
                 let key = egui::Id::new(("reply", &cell));
-                let mut draft: String = ui.ctx().data_mut(|m| m.get_temp(key)).unwrap_or_default();
+                let mut draft: crate::mentions::Draft = ui.ctx().data_mut(|m| m.get_temp(key)).unwrap_or_default();
                 // Buttons first, right to left, so the reply field gets exactly the width they leave:
                 // a field sized by a guess wider than the row pushes the resizable pane wider every frame.
                 ui.horizontal(|ui| {
@@ -92,9 +92,13 @@ fn comments(app: &mut SheetApp, ui: &mut Ui) {
                             app.run_or_alert("review.resolveComment", json!({"cell": cell, "resolved": !c.resolved}));
                         }
                         let send = ui.small_button("Send").clicked();
-                        let r = ui.add(egui::TextEdit::singleline(&mut draft).hint_text("Reply…").desired_width(ui.available_width()));
-                        if (r.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter)) || send) && !draft.is_empty() {
-                            app.run_or_alert("review.replyComment", json!({"cell": cell, "text": draft}));
+                        let width = ui.available_width();
+                        let r = crate::mentions::editor(app, ui, key.with("box"), &mut draft, false, "Reply… (@ to mention)", width);
+                        if (r.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter)) || send) && !draft.text.is_empty() {
+                            match app.run("review.replyComment", json!({"cell": cell, "text": draft.text, "mentions": draft.people()})) {
+                                Ok(answer) => crate::mentions::posted(app, &answer, &draft.text),
+                                Err(e) => app.message = Some(("Reply".into(), crate::clean_error(&e))),
+                            }
                             draft.clear();
                         }
                     });

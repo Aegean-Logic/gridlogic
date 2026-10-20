@@ -5,8 +5,8 @@ use std::fmt::Write as _;
 
 use gridcraft_core::{CellError, CellRef, RangeRef, Value};
 use gridcraft_model::{
-    Cell, CfOperator, CfRule, CfValueKind, Color, CondFormat, ErrorStyle, FilterCriterion, LineInfo, Orientation, Sheet, SparklineKind, Style, Table,
-    TotalsFn, Validation, ValidationKind, Workbook, default_icon_thresholds, icon_count,
+    Cell, CfOperator, CfRule, CfValueKind, Color, CondFormat, ErrorStyle, FilterCriterion, LineInfo, Orientation, Person, Sheet, SparklineKind,
+    Style, Table, TotalsFn, Validation, ValidationKind, Workbook, default_icon_thresholds, icon_count,
 };
 
 use crate::drawing::{Obj, image_content_type, image_ext};
@@ -545,7 +545,7 @@ pub fn write_sheet(wb: &Workbook, si: usize, selected: bool, out: &mut Out) -> (
         let ids = thread_ids(sheet, si);
         out.part(&format!("xl/comments{n}.xml"), Some(CT_COMMENTS), comments_xml(sheet, &ids).into_bytes());
         if !ids.is_empty() {
-            let x = threaded_xml(sheet, &ids, &mut out.persons);
+            let x = threaded_xml(sheet, &ids, &mut out.persons, &mut out.mention_ids);
             out.part(&format!("xl/threadedComments/threadedComment{n}.xml"), Some(CT_THREADED_COMMENTS), x.into_bytes());
             rels.add_uri(REL_THREADED_COMMENT, &format!("../threadedComments/threadedComment{n}.xml"));
         }
@@ -1188,11 +1188,12 @@ fn iso_datetime(d: &str) -> bool {
         && b.get(19..).is_some_and(|rest| rest.iter().all(|c| c.is_ascii_digit() || b".:+-Z".contains(c)))
 }
 
-/// `xl/threadedComments/threadedCommentN.xml`: each thread, then its replies (`parentId`).
-fn threaded_xml(sheet: &Sheet, ids: &BTreeMap<CellRef, Vec<String>>, persons: &mut Vec<String>) -> String {
-    let mut person = |name: &str| {
-        let i = persons.iter().position(|p| p == name).unwrap_or_else(|| {
-            persons.push(name.to_string());
+/// `xl/threadedComments/threadedCommentN.xml`: each thread, then its replies (`parentId`), with
+/// their `@mentions`.
+fn threaded_xml(sheet: &Sheet, ids: &BTreeMap<CellRef, Vec<String>>, persons: &mut Vec<Person>, mention_ids: &mut u64) -> String {
+    let mut person = |p: Person| {
+        let i = persons.iter().position(|q| *q == p).unwrap_or_else(|| {
+            persons.push(p);
             persons.len() - 1
         });
         crate::write::person_guid(i)
@@ -1211,17 +1212,38 @@ fn threaded_xml(sheet: &Sheet, ids: &BTreeMap<CellRef, Vec<String>>, persons: &m
                 (0, _) | (_, None) => String::new(),
                 (_, Some(parent)) => format!(" parentId=\"{parent}\""),
             };
-            let _ = write!(
-                s,
-                "<threadedComment ref=\"{}\"{date} personId=\"{}\" id=\"{own}\"{tail}><text>{}</text></threadedComment>",
-                cell.a1(),
-                person(author),
-                esc(text)
-            );
+            let by = person(Person::author(author));
+            let _ = write!(s, "<threadedComment ref=\"{}\"{date} personId=\"{by}\" id=\"{own}\"{tail}><text>{}</text>", cell.a1(), esc(text));
+            let mut list = String::new();
+            for m in c.mentions_of(k) {
+                // Offsets in UTF-16 units; a mention past the text's end isn't written.
+                let units = |n: usize| text.chars().take(n).map(char::len_utf16).sum::<usize>();
+                if m.len == 0 || m.start.saturating_add(m.len) > text.chars().count() || m.person.name.is_empty() {
+                    continue;
+                }
+                *mention_ids += 1;
+                let _ = write!(
+                    list,
+                    "<mention mentionpersonId=\"{}\" mentionId=\"{}\" startIndex=\"{}\" length=\"{}\"/>",
+                    person(m.person.clone()),
+                    mention_guid(*mention_ids),
+                    units(m.start),
+                    units(m.start + m.len) - units(m.start)
+                );
+            }
+            if !list.is_empty() {
+                let _ = write!(s, "<mentions>{list}</mentions>");
+            }
+            s.push_str("</threadedComment>");
         }
     }
     s.push_str("</ThreadedComments>");
     s
+}
+
+/// Id of the n-th mention of a workbook: GUID-shaped and deterministic, like the person ids.
+fn mention_guid(n: u64) -> String {
+    format!("{{00000000-0000-4000-8003-{:012X}}}", n & 0xFFFF_FFFF_FFFF)
 }
 
 /// A protection password hash as attributes, each name preceded by `prefix` (see

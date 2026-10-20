@@ -217,11 +217,21 @@ fn sample() -> Workbook {
             resolved: false,
             visible: false,
             dates: vec![],
+            mentions: vec![],
         },
     );
     s.comments.insert(
         at("C3"),
-        Comment { author: "Bob".into(), text: "second".into(), replies: vec![], threaded: false, resolved: false, visible: true, dates: vec![] },
+        Comment {
+            author: "Bob".into(),
+            text: "second".into(),
+            replies: vec![],
+            threaded: false,
+            resolved: false,
+            visible: true,
+            dates: vec![],
+            mentions: vec![],
+        },
     );
     s.comments.insert(
         at("D4"),
@@ -233,11 +243,21 @@ fn sample() -> Workbook {
             resolved: true,
             visible: false,
             dates: vec!["2026-10-11T09:30:00.00".into(), String::new(), "2026-10-11T10:15:00.00".into()],
+            mentions: vec![],
         },
     );
     s.comments.insert(
         at("E5"),
-        Comment { author: "Cy".into(), text: "open thread".into(), replies: vec![], threaded: true, resolved: false, visible: false, dates: vec![] },
+        Comment {
+            author: "Cy".into(),
+            text: "open thread".into(),
+            replies: vec![],
+            threaded: true,
+            resolved: false,
+            visible: false,
+            dates: vec![],
+            mentions: vec![],
+        },
     );
     s.autofilter = Some(AutoFilter {
         range: rr("K1:N20"),
@@ -435,7 +455,16 @@ fn sample() -> Workbook {
     s3.visibility = Visibility::VeryHidden;
     s3.comments.insert(
         at("A1"),
-        Comment { author: "Bob".into(), text: "other sheet".into(), replies: vec![], threaded: true, resolved: false, visible: false, dates: vec![] },
+        Comment {
+            author: "Bob".into(),
+            text: "other sheet".into(),
+            replies: vec![],
+            threaded: true,
+            resolved: false,
+            visible: false,
+            dates: vec![],
+            mentions: vec![],
+        },
     );
     wb.sheets.push(Arc::new(s3));
     wb.names.push(DefinedName { name: "Rate".into(), scope: None, formula: "0.07".into(), comment: "c".into(), hidden: false });
@@ -905,6 +934,85 @@ fn threaded_comments_write_persons_and_linked_legacy_notes() {
     }
 }
 
+/// `@mentions` in a thread and a reply survive a save, with their people in the persons part
+/// and offsets counted in UTF-16 units, as Excel counts them.
+#[test]
+fn comment_mentions_round_trip() {
+    let mut wb = Workbook::new();
+    let s = Arc::make_mut(&mut wb.sheets[0]);
+    let ann = Person { name: "Ann Lee".into(), user_id: "ann".into(), provider: "Nextcloud".into() };
+    let bo = Person { name: "Bø".into(), user_id: "bo".into(), provider: "Nextcloud".into() };
+    let thread = "😀 @Ann Lee look";
+    let reply = "Thanks @Bø and @Ann Lee";
+    let mut c = Comment {
+        author: "Cy".into(),
+        text: thread.into(),
+        replies: vec![("Dee".into(), reply.into())],
+        threaded: true,
+        resolved: false,
+        visible: false,
+        dates: vec![],
+        mentions: vec![],
+    };
+    c.set_mentions(0, locate_mentions(thread, std::slice::from_ref(&ann)));
+    c.set_mentions(1, locate_mentions(reply, &[bo.clone(), ann.clone()]));
+    assert_eq!(c.mentions_of(0), [Mention { start: 2, len: 8, person: ann.clone() }]);
+    assert_eq!(c.mentions_of(1).len(), 2);
+    s.comments.insert(at("B2"), c.clone());
+    let bytes = write_xlsx(&wb).unwrap();
+    let mut pkg = Package::open(&bytes).unwrap();
+    let tc = String::from_utf8(pkg.read("xl/threadedComments/threadedComment1.xml").unwrap().unwrap()).unwrap();
+    // The emoji is two UTF-16 units.
+    assert!(tc.contains("startIndex=\"3\" length=\"8\""), "{tc}");
+    let persons = String::from_utf8(pkg.read("xl/persons/person.xml").unwrap().unwrap()).unwrap();
+    assert!(persons.contains("displayName=\"Ann Lee\"") && persons.contains("userId=\"ann\" providerId=\"Nextcloud\""), "{persons}");
+    assert_eq!(persons.matches("<person ").count(), 4, "two authors, two mentioned: {persons}");
+    let (back, _) = read_xlsx(&bytes).unwrap();
+    assert_eq!(back.sheets[0].comments[&at("B2")], c);
+}
+
+/// Mentions pointing outside the text, at unknown people or overlapping are dropped on read.
+#[test]
+fn hostile_mentions_are_dropped() {
+    let mut wb = Workbook::new();
+    let s = Arc::make_mut(&mut wb.sheets[0]);
+    let ann = Person { name: "Ann".into(), user_id: "ann".into(), provider: "Nextcloud".into() };
+    let mut c = Comment {
+        author: "Cy".into(),
+        text: "@Ann hi".into(),
+        replies: vec![],
+        threaded: true,
+        resolved: false,
+        visible: false,
+        dates: vec![],
+        mentions: vec![],
+    };
+    c.set_mentions(0, locate_mentions("@Ann hi", &[ann]));
+    s.comments.insert(at("A1"), c);
+    let bytes = write_xlsx(&wb).unwrap();
+    let mut z = zip::ZipArchive::new(std::io::Cursor::new(bytes)).unwrap();
+    let mut parts: Vec<(String, Vec<u8>)> = vec![];
+    for i in 0..z.len() {
+        let mut f = z.by_index(i).unwrap();
+        let mut d = vec![];
+        f.read_to_end(&mut d).unwrap();
+        parts.push((f.name().to_string(), d));
+    }
+    for (name, data) in &mut parts {
+        if name.starts_with("xl/threadedComments/") {
+            let x = String::from_utf8(data.clone()).unwrap();
+            let bad = r#"<mention mentionpersonId="{nobody}" mentionId="{x}" startIndex="0" length="4"/><mention mentionpersonId="{00000000-0000-4000-8002-000000000001}" mentionId="{y}" startIndex="99999999999999999999" length="4"/><mention mentionpersonId="{00000000-0000-4000-8002-000000000001}" mentionId="{z}" startIndex="1" length="18446744073709551615"/><mention mentionpersonId="{00000000-0000-4000-8002-000000000001}" mentionId="{w}" startIndex="2" length="2"/>"#;
+            *data = x.replace("<mentions>", &format!("<mentions>{bad}")).into_bytes();
+        }
+    }
+    let refs: Vec<(&str, &[u8])> = parts.iter().map(|(n, d)| (n.as_str(), d.as_slice())).collect();
+    let (back, _) = read_xlsx(&super::make_zip(&refs)).unwrap();
+    let c = &back.sheets[0].comments[&at("A1")];
+    // Unknown people and offsets outside the text are dropped; of two overlapping mentions only the
+    // first is kept.
+    assert_eq!(c.mentions_of(0).len(), 1, "{:?}", c.mentions);
+}
+
 #[test]
 fn bad_comment_dates_are_left_out() {
     let mut wb = Workbook::new();
@@ -917,6 +1025,7 @@ fn bad_comment_dates_are_left_out() {
         resolved: false,
         visible: false,
         dates: vec!["\"/><evil".into()],
+        mentions: vec![],
     };
     s.comments.insert(at("A1"), c);
     let (back, _) = read_xlsx(&write_xlsx(&wb).unwrap()).unwrap();
