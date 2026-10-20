@@ -451,7 +451,24 @@ fn read_cell(cx: &mut Ctx<'_>, sheet: &mut Sheet, st: &mut RowState, c: &El, pos
     }
     let dynamic = c.attr("cm").is_some();
     let formula = c.child("f").and_then(|f| read_formula(cx, st, f, pos, dynamic));
-    let value = if formula.is_none() && st.dynamic.iter().any(|r| r.contains(pos) && r.start != pos) { Value::Empty } else { value };
+    // A dynamic array that spilled when saved: its spill range and values, as saved (calculation
+    // lays them out again; where arrays collide, the ones that spilled keep their cells).
+    if dynamic
+        && formula.as_ref().is_some_and(|f| f.array.is_none())
+        && let Some(r) = st.dynamic.last().filter(|r| r.start == pos)
+    {
+        sheet.spill_ranges.insert(pos, *r);
+    }
+    let within = if formula.is_none() { st.dynamic.iter().find(|r| r.contains(pos) && r.start != pos) } else { None };
+    let value = match within {
+        Some(r) => {
+            if sheet.spill_ranges.get(&r.start) == Some(r) && !value.is_empty() {
+                sheet.spill.insert(pos, value);
+            }
+            Value::Empty
+        }
+        None => value,
+    };
     sheet.cells.set(pos, Cell { value, formula: formula.map(Arc::new), style });
 }
 

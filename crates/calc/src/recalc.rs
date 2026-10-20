@@ -813,7 +813,9 @@ impl Calc {
     pub fn recalc_all(&mut self, wb: &mut Workbook) {
         self.rebuild(wb);
         // Spills are laid out again from the formulas where they are now (a structural edit moves
-        // or deletes the formulas, not the values they spilled).
+        // or deletes the formulas, not the values they spilled). Where arrays collide, the ones
+        // that spilled before have first claim.
+        let spilled: HashSet<Key> = wb.sheets.iter().enumerate().flat_map(|(i, s)| s.spill_ranges.keys().map(move |c| (i, *c))).collect();
         for i in 0..wb.sheets.len() {
             if wb.sheet(i).is_some_and(|s| !s.spill_ranges.is_empty() || !s.spill.is_empty())
                 && let Some(sh) = wb.sheet_mut(i)
@@ -823,7 +825,7 @@ impl Calc {
             }
         }
         let all: Vec<Key> = self.graph.nodes.keys().copied().collect();
-        self.run(wb, all, true);
+        self.run(wb, all, true, &spilled);
     }
 
     /// Updates the graph for cells whose content changed and recalculates what depends on them.
@@ -860,7 +862,7 @@ impl Calc {
         if wb.calc.mode == CalcMode::Manual {
             // Only the edited formulas themselves are evaluated.
             let own: Vec<Key> = changed.iter().copied().filter(|k| self.graph.nodes.contains_key(k)).collect();
-            self.run(wb, own, false);
+            self.run(wb, own, false, &HashSet::default());
             return;
         }
         let mut seeds: Vec<Key> = changed.to_vec();
@@ -908,7 +910,7 @@ impl Calc {
         let dirty = self.dirty_closure(wb, &seeds);
         let t1 = prof_now();
         let n = dirty.len();
-        self.run(wb, dirty, false);
+        self.run(wb, dirty, false, &HashSet::default());
         if std::env::var_os("GRIDCRAFT_PROFILE").is_some() {
             eprintln!("recalc: {} seeds, closure {} cells {:.1} ms, run {:.1} ms", seeds.len(), n, t1 - t0, prof_now() - t1);
         }
@@ -947,8 +949,10 @@ impl Calc {
         seen.into_iter().collect()
     }
 
-    /// Evaluates the dirty set and writes results (and spills) back.
-    fn run(&mut self, wb: &mut Workbook, mut dirty: Vec<Key>, full: bool) {
+    /// Evaluates the dirty set and writes results (and spills) back. `spilled`: anchors that
+    /// spilled before besides those the workbook holds spill ranges for (a full recalculation
+    /// clears them first).
+    fn run(&mut self, wb: &mut Workbook, mut dirty: Vec<Key>, full: bool, spilled: &HashSet<Key>) {
         let mut dynamic_again = !self.graph.dynamic.is_empty();
         for _round in 0..8 {
             if dirty.is_empty() {
@@ -986,6 +990,23 @@ impl Calc {
             let tw = prof_now();
             self.last_recalc_cells = results.len();
             self.circular = cycles;
+            // Arrays that collide are laid out in this order: one that already spilled keeps its
+            // cells and a newcomer is #SPILL!, like Excel. First the formulas with a spill range
+            // (left by the last recalculation, or read from a file), then the others not showing
+            // #SPILL! (a structural edit moves formulas but not their spill ranges), then those
+            // showing it; row-major within each. A full recalculation, which lays every spill out
+            // again, so settles on what the incremental recalculation left.
+            let mut order = dirty.clone();
+            order.sort_by_cached_key(|k| {
+                let Some(sh) = wb.sheet(k.0) else { return 2 };
+                if sh.cell(k.1).is_some_and(|c| c.value == Value::Error(CellError::Spill)) {
+                    2
+                } else if spilled.contains(k) || sh.spill_ranges.contains_key(&k.1) {
+                    0
+                } else {
+                    1
+                }
+            });
             // Write back.
             let mut spill_changes: Vec<Key> = Vec::new();
             let mut freed: Vec<(usize, RangeRef)> = Vec::new();
@@ -997,7 +1018,7 @@ impl Calc {
                     cell.value = v;
                 }
             }
-            for k in &dirty {
+            for k in &order {
                 let new = spills.get(k);
                 let Some(sheet) = wb.sheet_mut(k.0) else { continue };
                 let old = sheet.spill_ranges.get(&k.1).copied();
@@ -1023,6 +1044,8 @@ impl Calc {
                         if let Some(cell) = sheet.cells.get_mut(k.1) {
                             cell.value = Value::Error(CellError::Spill);
                         }
+                        // Formulas evaluated in this pass read the array over its area.
+                        changed_range = Some(changed_range.map_or(range, |o| o.union(&range)));
                     } else {
                         for (i, c) in range.iter().enumerate() {
                             if c != k.1 {
