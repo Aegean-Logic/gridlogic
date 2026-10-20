@@ -339,14 +339,15 @@ impl Dialog {
                 let existing = app
                     .session
                     .active()
-                    .and_then(|d| d.wb.active().and_then(|s| s.comments.get(&d.selection.active).map(|c| c.text.clone())))
+                    .and_then(|d| d.wb.active().and_then(|s| s.comments.get(&d.selection.active).cloned()))
+                    .map(|c| crate::mentions::Draft::new(&c.text, c.mentions_of(0)))
                     .unwrap_or_default();
                 Dialog::form(
                     if threaded { "comment" } else { "note" },
                     if threaded { "New Comment" } else { "New Note" },
                     if threaded { "review.newComment" } else { "review.newNote" },
                     vec![Text { key: "text", label: if threaded { "Start a conversation:" } else { "Note:" } }],
-                    json!({"text": existing}),
+                    if threaded { json!({"text": existing.text, "mentions": existing.people()}) } else { json!({"text": existing.text}) },
                 )
             }
             // Asks before a web or e-mail link leaves the workbook; OK runs `link.open`, which
@@ -1228,6 +1229,18 @@ pub fn show(app: &mut SheetApp, ctx: &egui::Context) {
                         open = false;
                     }
                 }
+                // A comment offers people to @mention as it's typed.
+                "comment" => {
+                    ui.label("Start a conversation:");
+                    let mut draft = crate::mentions::Draft {
+                        text: d.values.get("text").and_then(Json::as_str).unwrap_or("").to_string(),
+                        picked: crate::mentions::people_from(d.values.get("mentions")),
+                    };
+                    crate::mentions::editor(app, ui, egui::Id::new("comment-dialog-text"), &mut draft, true, "@ to mention someone", 320.0);
+                    d.values.insert("text".into(), json!(draft.text));
+                    d.values.insert("mentions".into(), draft.people());
+                    ok_cancel(ui, &mut confirm, &mut open);
+                }
                 _ => form(ui, &mut d, &mut confirm, &mut open),
             }
         });
@@ -1261,7 +1274,10 @@ pub fn show(app: &mut SheetApp, ctx: &egui::Context) {
         match app.run(cmd, params) {
             Ok(r) => {
                 open = false;
-                if d.name == "solver" {
+                if d.name == "comment" {
+                    let text = d.values.get("text").and_then(Json::as_str).unwrap_or("").to_string();
+                    crate::mentions::posted(app, &r, &text);
+                } else if d.name == "solver" {
                     app.open_dialog("solverResults", r);
                 } else if d.name == "openPassword" {
                     let path = d.values.get("path").and_then(Json::as_str).map(str::to_string);

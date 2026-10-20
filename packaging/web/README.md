@@ -90,7 +90,8 @@ from anywhere else are ignored. In this mode GridLogic starts with an empty work
 | `gridcraft:dirty` | to the page | `dirty`: whether there are unsaved changes |
 | `gridcraft:failed` | to the page | `error`: the app couldn't start |
 
-Other query flags: `&author=Name` signs new notes and comments.
+Other query flags: `&author=Name` signs new notes and comments; `&comment=Sheet1!B3` opens that
+comment once the workbook is loaded (the link of an `@mention`).
 
 **Save confirmation (`&ack=1`).** Without it, a workbook counts as saved as soon as GridLogic
 hands it to the page, even if the page then fails to store it. With it, the workbook counts as

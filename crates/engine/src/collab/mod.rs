@@ -27,7 +27,8 @@ use crate::{DocState, EngineError, Result, Session};
 /// differently from the others (it ignores a part they send) drifts from them unseen, and can save
 /// its copy over their work. Raise it whenever an op carries something an older build would
 /// misread or drop. 1: structural edits, then a content patch of cells, lines and fields.
-pub const PROTOCOL: u32 = 1;
+/// 2: comments carry `@mentions`.
+pub const PROTOCOL: u32 = 2;
 
 /// The largest edit shared with the others (its op as JSON). A bigger one (a paste of hundreds of
 /// thousands of cells) is taken back with a message to make it in smaller steps: the server and

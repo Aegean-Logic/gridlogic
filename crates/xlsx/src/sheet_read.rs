@@ -8,7 +8,7 @@ use gridcraft_core::{CellError, CellRef, DateSystem, MAX_COLS, MAX_ROWS, RangeRe
 use gridcraft_formula::Expr;
 use gridcraft_model::{
     AutoFilter, Cell, CfOperator, CfRule, CfValueKind, Comment, CondFormat, EditRange, ErrorStyle, FilterCriterion, Formula, Hyperlink, LineInfo,
-    Orientation, PasswordHash, Sheet, SheetProtection, Sparkline, SparklineKind, Table, TableColumn, TotalsFn, Validation, ValidationKind,
+    Mention, Orientation, PasswordHash, Sheet, SheetProtection, Sparkline, SparklineKind, Table, TableColumn, TotalsFn, Validation, ValidationKind,
     XmlColumnPr,
 };
 
@@ -899,7 +899,10 @@ fn read_comments(x: &El, sheet: &mut Sheet) {
         {
             text = rest.strip_prefix('\n').unwrap_or(rest).to_string();
         }
-        sheet.comments.insert(cell, Comment { author, text, replies: vec![], threaded: false, resolved: false, visible: false, dates: vec![] });
+        sheet.comments.insert(
+            cell,
+            Comment { author, text, replies: vec![], threaded: false, resolved: false, visible: false, dates: vec![], mentions: vec![] },
+        );
     }
 }
 
@@ -929,27 +932,30 @@ fn read_note_visibility(x: &El, sheet: &mut Sheet, depth: usize) {
 
 fn read_threaded(cx: &Ctx<'_>, x: &El, sheet: &mut Sheet) {
     let mut by_id: HashMap<String, CellRef> = HashMap::new();
-    let mut replies: Vec<(String, String, String, String)> = vec![];
+    let mut replies: Vec<(String, String, String, String, Vec<Mention>)> = vec![];
     for t in x.kids("threadedComment") {
         let Some(cell) = t.attr("ref").and_then(CellRef::parse) else { continue };
-        let author = t.attr("personId").and_then(|p| cx.persons.get(p)).cloned().unwrap_or_default();
+        let author = t.attr("personId").and_then(|p| cx.persons.get(p)).map(|p| p.name.clone()).unwrap_or_default();
         let text = t.child("text").map(|e| e.text.clone()).unwrap_or_default();
         let date = t.attr("dT").unwrap_or("").to_string();
+        let mentions = read_mentions(cx, t, &text);
         match t.attr("parentId") {
-            Some(p) => replies.push((p.to_string(), author, text, date)),
+            Some(p) => replies.push((p.to_string(), author, text, date, mentions)),
             None => {
                 if let Some(id) = t.attr("id") {
                     by_id.insert(id.to_string(), cell);
                 }
                 let dates = if date.is_empty() { vec![] } else { vec![date] };
-                sheet
-                    .comments
-                    .insert(cell, Comment { author, text, replies: vec![], threaded: true, resolved: t.flag("done", false), visible: false, dates });
+                let mentions = if mentions.is_empty() { vec![] } else { vec![mentions] };
+                sheet.comments.insert(
+                    cell,
+                    Comment { author, text, replies: vec![], threaded: true, resolved: t.flag("done", false), visible: false, dates, mentions },
+                );
             }
         }
     }
     // Replies in file order; ones whose thread is missing are dropped.
-    for (parent, author, text, date) in replies {
+    for (parent, author, text, date, mentions) in replies {
         if let Some(c) = by_id.get(&parent)
             && let Some(cm) = sheet.comments.get_mut(c)
         {
@@ -962,8 +968,49 @@ fn read_threaded(cx: &Ctx<'_>, x: &El, sheet: &mut Sheet) {
                 cm.dates.push(date);
             }
             cm.replies.push((author, text));
+            if !mentions.is_empty() {
+                let k = cm.replies.len();
+                cm.set_mentions(k, mentions);
+            }
         }
     }
+}
+
+/// The `<mentions>` of a threaded comment ([MS-XLSX] `CT_Mention`): offsets count UTF-16 units of
+/// the text; mentions of unknown people or outside the text are dropped.
+fn read_mentions(cx: &Ctx<'_>, t: &El, text: &str) -> Vec<Mention> {
+    let Some(list) = t.child("mentions") else { return vec![] };
+    let mut out: Vec<Mention> = vec![];
+    for m in list.kids("mention").take(MAX_MENTIONS) {
+        let Some(person) = m.attr("mentionpersonId").and_then(|p| cx.persons.get(p)) else { continue };
+        let num = |a: &str| m.attr(a).and_then(|v| v.parse::<usize>().ok());
+        let (Some(start16), Some(len16)) = (num("startIndex"), num("length")) else { continue };
+        let (Some(start), Some(end)) = (utf16_to_chars(text, start16), utf16_to_chars(text, start16.saturating_add(len16))) else { continue };
+        if end > start && !out.iter().any(|o| start < o.start + o.len && o.start < end) {
+            out.push(Mention { start, len: end - start, person: person.clone() });
+        }
+    }
+    out.sort_by_key(|m| m.start);
+    out
+}
+
+/// At most this many mentions are read per comment entry.
+const MAX_MENTIONS: usize = 64;
+
+/// The character offset of UTF-16 offset `at` in `text`, if it falls on a character boundary
+/// inside (or at the end of) the text.
+pub(crate) fn utf16_to_chars(text: &str, at: usize) -> Option<usize> {
+    let mut units = 0usize;
+    for (i, ch) in text.chars().enumerate() {
+        if units == at {
+            return Some(i);
+        }
+        if units > at {
+            return None;
+        }
+        units += ch.len_utf16();
+    }
+    (units == at).then(|| text.chars().count())
 }
 
 /// Worksheet extensions: x14 data validations and sparklines.

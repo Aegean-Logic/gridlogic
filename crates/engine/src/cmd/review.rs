@@ -48,6 +48,15 @@ pub fn specs() -> Vec<CommandSpec> {
         cmd!(noundo "review.nextComment", "Next Comment", ["Review", "Comments"], None, "{} → {sheet, cell}", has_comments, |s, _| step_comment(
             s, true
         )),
+        cmd!(
+            noundo "review.goToComment",
+            "Go to Comment",
+            [],
+            None,
+            "{anchor: \"Sheet1!B3\" | \"'My sheet'!B3\"} (selects the comment's cell and opens the Comments pane) → {sheet, cell}",
+            has_doc,
+            go_to_comment
+        ),
         cmd!(query "review.showComments", "Show Comments", ["Review", "Comments"], None, "{on?: bool} (toggles the Comments pane)", has_doc, |s, p| {
             s.comments_pane = bool_param(p, "on").unwrap_or(!s.comments_pane);
             Ok(json!({"on": s.comments_pane}))
@@ -106,6 +115,32 @@ fn step_comment(s: &mut Session, forward: bool) -> Result<Json> {
         d.selection.expand_merges(sh);
     }
     let name = d.wb.active().map(|sh| sh.name.clone()).unwrap_or_default();
+    Ok(json!({"sheet": name, "cell": at.a1()}))
+}
+
+/// Opens a comment from its address (`insert::comment_anchor`), as when someone follows the link
+/// of a mention.
+fn go_to_comment(s: &mut Session, p: &Json) -> Result<Json> {
+    let anchor = str_param(p, "anchor").unwrap_or("").trim();
+    let bad = || EngineError::Other(format!("There's no comment at {anchor}."));
+    let (sheet, cell) = anchor.rsplit_once('!').ok_or_else(bad)?;
+    let sheet = match sheet.strip_prefix('\'').and_then(|t| t.strip_suffix('\'')) {
+        Some(quoted) => quoted.replace("''", "'"),
+        None => sheet.to_string(),
+    };
+    let at = CellRef::parse(cell).ok_or_else(bad)?;
+    let d = s.doc_mut()?;
+    let i = d.wb.sheets.iter().position(|sh| sh.name.eq_ignore_ascii_case(&sheet)).ok_or_else(bad)?;
+    if d.wb.sheets.get(i).is_none_or(|sh| !sh.comments.contains_key(&at)) {
+        return Err(bad());
+    }
+    d.wb_switch_sheet(i);
+    d.selection = crate::Selection::at(at);
+    if let Some(sh) = d.wb.active() {
+        d.selection.expand_merges(sh);
+    }
+    let name = d.wb.active().map(|sh| sh.name.clone()).unwrap_or_default();
+    s.comments_pane = true;
     Ok(json!({"sheet": name, "cell": at.a1()}))
 }
 
@@ -386,6 +421,53 @@ mod tests {
         for (sheet, cell) in [(1, "B2"), (0, "A3"), (0, "C1")] {
             s.execute("review.previousComment", json!({})).unwrap();
             assert_eq!(at(&s), (sheet, cell.to_string()));
+        }
+    }
+
+    #[test]
+    fn mentions_are_kept_on_comments_replies_and_edits() {
+        let mut s = book();
+        let ann = json!({"name": "Ann Lee", "id": "ann"});
+        let r = s.execute("review.newComment", json!({"cell": "D4", "text": "@Ann Lee have a look", "mentions": [ann]})).unwrap();
+        assert_eq!(r["anchor"], "Sheet1!D4");
+        assert_eq!(r["mentions"][0]["id"], "ann");
+        assert_eq!(r["mentions"][0]["provider"], "Nextcloud");
+        // A person picked whose `@Name` was edited away is no mention.
+        let r = s.execute("review.replyComment", json!({"cell": "D4", "text": "Done, @Ann", "mentions": [ann]})).unwrap();
+        assert_eq!(r["mentions"], json!([]));
+        s.execute("review.replyComment", json!({"cell": "D4", "text": "cc @Ann Lee", "mentions": [ann]})).unwrap();
+        let c = s.doc().unwrap().wb.sheets[0].comments[&CellRef::parse("D4").unwrap()].clone();
+        assert_eq!(c.mentions_of(0).len(), 1);
+        assert!(c.mentions_of(1).is_empty());
+        assert_eq!(c.mentions_of(2)[0].start, 3);
+        // Editing tells only people newly mentioned.
+        let bo = json!({"name": "Bo", "id": "bo"});
+        let r = s.execute("review.newComment", json!({"cell": "D4", "text": "@Ann Lee and @Bo", "mentions": [ann, bo]})).unwrap();
+        assert_eq!(r["mentions"], json!([{"name": "Bo", "id": "bo", "provider": "Nextcloud"}]));
+        // Editing the thread keeps its replies and their mentions.
+        s.execute("review.newComment", json!({"cell": "D4", "text": "Changed"})).unwrap();
+        let c = s.doc().unwrap().wb.sheets[0].comments[&CellRef::parse("D4").unwrap()].clone();
+        assert_eq!((c.text.as_str(), c.replies.len(), c.author.as_str()), ("Changed", 2, "GridLogic User"));
+        assert!(c.mentions_of(0).is_empty() && c.mentions_of(2).len() == 1);
+        // Notes never hold mentions.
+        s.execute("review.newNote", json!({"cell": "E5", "text": "@Ann Lee", "mentions": [ann]})).unwrap();
+        assert!(s.doc().unwrap().wb.sheets[0].comments[&CellRef::parse("E5").unwrap()].mentions.is_empty());
+    }
+
+    #[test]
+    fn go_to_comment_opens_a_mentions_link() {
+        let mut s = book();
+        s.execute("sheet.rename", json!({"sheet": 1, "name": "It's two"})).unwrap();
+        let r = s.execute("review.newComment", json!({"sheet": 1, "cell": "C5", "text": "x"})).unwrap();
+        assert_eq!(r["anchor"], "'It''s two'!C5");
+        s.comments_pane = false;
+        s.execute("review.goToComment", json!({"anchor": r["anchor"]})).unwrap();
+        assert_eq!(at(&s), (1, "C5".to_string()));
+        assert!(s.comments_pane);
+        s.execute("review.goToComment", json!({"anchor": "Sheet1!A3"})).unwrap();
+        assert_eq!(at(&s), (0, "A3".to_string()));
+        for bad in ["", "Nowhere!A1", "Sheet1!ZZZZZZ1", "Sheet1!B9", "Sheet1"] {
+            assert!(s.execute("review.goToComment", json!({"anchor": bad})).is_err(), "{bad}");
         }
     }
 

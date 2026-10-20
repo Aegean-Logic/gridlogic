@@ -323,6 +323,86 @@ pub struct Comment {
     /// read from the file (`dT`); empty when unknown, e.g. for comments made here.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub dates: Vec<String>,
+    /// Threaded comments: the people `@mentioned` in the thread (`[0]`) and in each reply
+    /// (`[i + 1]`); missing entries have none. Notes carry none, as in Excel.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub mentions: Vec<Vec<Mention>>,
+}
+
+impl Comment {
+    /// The mentions of entry `k` (0 = the thread, `i + 1` = reply `i`).
+    pub fn mentions_of(&self, k: usize) -> &[Mention] {
+        self.mentions.get(k).map(Vec::as_slice).unwrap_or(&[])
+    }
+
+    /// Sets the mentions of entry `k`, padding the list and trimming empty entries off its end.
+    pub fn set_mentions(&mut self, k: usize, m: Vec<Mention>) {
+        if self.mentions.len() <= k {
+            self.mentions.resize(k + 1, vec![]);
+        }
+        if let Some(slot) = self.mentions.get_mut(k) {
+            *slot = m;
+        }
+        while self.mentions.last().is_some_and(Vec::is_empty) {
+            self.mentions.pop();
+        }
+    }
+}
+
+/// Someone `@mentioned` in a comment: the `@Name` text at `start..start + len` (in characters)
+/// of the entry's text stands for `person`.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Mention {
+    pub start: usize,
+    pub len: usize,
+    pub person: Person,
+}
+
+/// A person known to a workbook's comments (Excel's `xl/persons` part).
+#[derive(Clone, Debug, Default, PartialEq, Eq, Hash, Serialize, Deserialize)]
+pub struct Person {
+    pub name: String,
+    /// The person's id at `provider` (a Nextcloud user id, an Office account id…).
+    #[serde(default)]
+    pub user_id: String,
+    /// Who issued `user_id`: `Nextcloud`, Office's `AD` or `Windows Live`, or `None`.
+    #[serde(default)]
+    pub provider: String,
+}
+
+impl Person {
+    /// A comment's author, known by name only.
+    pub fn author(name: &str) -> Person {
+        Person { name: name.to_string(), ..Person::default() }
+    }
+}
+
+/// Finds each person's `@Name` in `text` and returns the mentions that are still there: the
+/// first occurrence per person, as Excel keeps only the first. A mention whose text was edited
+/// is dropped, as Office turns it back into plain text.
+pub fn locate_mentions(text: &str, people: &[Person]) -> Vec<Mention> {
+    let mut out: Vec<Mention> = vec![];
+    for p in people {
+        if p.name.is_empty() || out.iter().any(|m| m.person == *p) {
+            continue;
+        }
+        let needle = format!("@{}", p.name);
+        let mut from = 0;
+        while let Some(i) = text.get(from..).and_then(|t| t.find(&needle)).map(|i| i + from) {
+            let start = text[..i].chars().count();
+            let len = needle.chars().count();
+            let next = text[i + needle.len()..].chars().next();
+            let overlaps = out.iter().any(|m| start < m.start + m.len && m.start < start + len);
+            // `@Ann` must not match the start of `@Anna`.
+            if !overlaps && !next.is_some_and(char::is_alphanumeric) {
+                out.push(Mention { start, len, person: p.clone() });
+                break;
+            }
+            from = i + needle.len();
+        }
+    }
+    out.sort_by_key(|m| m.start);
+    out
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]

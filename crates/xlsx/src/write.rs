@@ -118,8 +118,11 @@ pub struct Out {
     pub drawings: u32,
     pub tables: u32,
     pub comments: u32,
-    /// Authors of threaded comments, in first-use order; written to `xl/persons/person.xml`.
-    pub persons: Vec<String>,
+    /// Authors and mentioned people of threaded comments, in first-use order; written to
+    /// `xl/persons/person.xml`.
+    pub persons: Vec<gridcraft_model::Person>,
+    /// Mentions written so far (their ids are numbered).
+    pub mention_ids: u64,
     pub table_id: u32,
     pub dynamic_arrays: bool,
     pub needs_calc: bool,
@@ -206,6 +209,7 @@ pub fn write_xlsx(wb: &Workbook, kind: XlsxKind) -> Result<Vec<u8>, IoError> {
         tables: 0,
         comments: 0,
         persons: vec![],
+        mention_ids: 0,
         table_id: 0,
         dynamic_arrays: false,
         needs_calc: false,
@@ -392,9 +396,17 @@ pub fn write_xlsx(wb: &Workbook, kind: XlsxKind) -> Result<Vec<u8>, IoError> {
     }
     if !out.persons.is_empty() {
         let mut x = format!("{XML_DECL}<personList xmlns=\"{NS_THREADED}\" xmlns:x=\"{NS_MAIN}\">");
-        for (i, name) in out.persons.iter().enumerate() {
-            let n = esc_attr(name);
-            let _ = write!(x, "<person displayName=\"{n}\" id=\"{}\" userId=\"{n}\" providerId=\"None\"/>", person_guid(i));
+        for (i, p) in out.persons.iter().enumerate() {
+            let provider = if p.provider.is_empty() { "None" } else { &p.provider };
+            let user = if p.user_id.is_empty() { &p.name } else { &p.user_id };
+            let _ = write!(
+                x,
+                "<person displayName=\"{}\" id=\"{}\" userId=\"{}\" providerId=\"{}\"/>",
+                esc_attr(&p.name),
+                person_guid(i),
+                esc_attr(user),
+                esc_attr(provider)
+            );
         }
         x.push_str("</personList>");
         out.part("xl/persons/person.xml", Some(CT_PERSONS), x.into_bytes());
