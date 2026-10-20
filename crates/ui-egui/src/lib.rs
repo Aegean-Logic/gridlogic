@@ -33,6 +33,7 @@ pub mod ribbon;
 pub mod selection_glide;
 pub mod share;
 pub mod tabs;
+pub mod talk;
 pub mod text_box;
 pub mod theme;
 pub mod widgets;
@@ -238,6 +239,8 @@ pub struct SheetApp {
     pub share: Option<share::ShareDialog>,
     /// `@mentions` in comments: the people picker and the notifications under way.
     pub mentions: mentions::Mentions,
+    /// "Chat about this file" (Nextcloud Talk) being opened.
+    pub talk: talk::Talk,
     /// Nextcloud in the File view (account, Open, Save As).
     pub cloud_files: cloud_files::CloudFiles,
     /// Workbooks in Nextcloud (by document uid) whose AutoSave was switched off; it's on for
@@ -306,6 +309,7 @@ impl SheetApp {
             share: None,
             cloud_files: Default::default(),
             mentions: Default::default(),
+            talk: Default::default(),
             cloud_autosave_off: Default::default(),
             backstage: None,
             message: None,
@@ -698,6 +702,12 @@ impl SheetApp {
                 }
                 self.share = share::ShareDialog::open(self);
                 Ok(json!({"open": self.share.is_some()}))
+            }
+            "ui.chat" => {
+                if let Err(e) = talk::open(self) {
+                    return Some(Err(e));
+                }
+                Ok(json!({"opening": self.talk.opening()}))
             }
             "ui.dialog" => {
                 let name = p.get("name").and_then(Json::as_str).unwrap_or("");
@@ -1201,6 +1211,7 @@ impl SheetApp {
         dialogs::show(self, &ctx);
         share::show(self, &ctx);
         mentions::show(self, &ctx);
+        talk::show(self, &ctx);
         cloud_files::show_conflict(self, &ctx);
         widgets::message_box(self, &ctx);
         widgets::toast(self, &ctx);

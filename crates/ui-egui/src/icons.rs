@@ -131,6 +131,8 @@ pub enum Icon {
     OpenFolder,
     Info,
     Print,
+    /// Chat about the file (Nextcloud Talk): two speech bubbles.
+    Chat,
 }
 
 struct G<'a> {
@@ -707,6 +709,11 @@ pub fn paint(p: &Painter, rect: Rect, icon: Icon, c: Color32) {
             g.circle(8.0, 8.0, 6.5, None, Some(c));
             g.line(&[(8.0, 7.0), (8.0, 11.8)], c, 1.3);
             g.circle(8.0, 4.8, 0.8, Some(c), None);
+        }
+        Icon::Chat => {
+            g.line(&[(5.5, 4.5), (5.5, 1.5), (14.5, 1.5), (14.5, 8.0), (13.0, 8.0), (13.0, 10.5), (10.5, 8.0)], c, 1.1);
+            g.poly(&[(1.5, 5.5), (11.0, 5.5), (11.0, 11.5), (1.5, 11.5)], Color32::WHITE);
+            g.line(&[(1.5, 5.5), (11.0, 5.5), (11.0, 11.5), (6.0, 11.5), (3.5, 14.5), (3.5, 11.5), (1.5, 11.5), (1.5, 5.5)], c, 1.1);
         }
         Icon::Print => {
             g.line(&[(4.5, 5.5), (4.5, 1.5), (11.5, 1.5), (11.5, 5.5)], c, 1.1);

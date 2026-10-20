@@ -159,6 +159,17 @@ pub fn title_bar(app: &mut SheetApp, ui: &mut Ui) {
                 } else {
                     egui::Popup::menu(&share).show(|ui| exports(app, ui));
                 }
+                // Chat about the workbook in Nextcloud Talk (in the browser), as Excel opens a
+                // file's Teams chat: for workbooks in Nextcloud, on a server with Talk.
+                if crate::talk::available(app) {
+                    let hint = "Chat about this file: its Nextcloud Talk conversation, in the browser";
+                    let chat = small_button(ui, Icon::Chat, "Chat", hint, false);
+                    let name = app.ui.language.tr("Chat");
+                    chat.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Button, true, name));
+                    if chat.clicked() {
+                        act(app, "ui.chat", json!({}));
+                    }
+                }
                 // In the browser: carry on in GridLogic on this computer, as Excel for the web's
                 // Open in Desktop App does (together with everyone still editing here).
                 // A narrow window (a phone, a side-by-side browser) gets the icon alone.
